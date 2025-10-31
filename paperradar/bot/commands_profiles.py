@@ -7,6 +7,25 @@ from paperradar.storage.users import (
     clear_sent_ids_for_active_profile,
 )
 from .utils import split_once, argstr
+from paperradar.services.profile_builder import analyze_text
+from paperradar.fetchers.search_terms import set_custom_terms
+
+
+def _apply_profile_analysis(u: dict, text: str, *, summary_override: str = None) -> str:
+    analysis = analyze_text(text, summary_override=summary_override)
+    fallback = (summary_override if summary_override is not None else text or "").strip()
+    if analysis:
+        u["profile_summary"] = analysis["summary"]
+        u["profile_topics"] = analysis["topics"]
+        u["profile_topic_weights"] = analysis["topic_weights"]
+        result = analysis["profile_text"]
+    else:
+        u["profile_summary"] = fallback
+        u["profile_topics"] = []
+        u["profile_topic_weights"] = {}
+        result = fallback
+    set_custom_terms(u.get("profile_topics", []))
+    return result
 
 def profile(update, context):
     cid = update.effective_chat.id
@@ -17,8 +36,9 @@ def profile(update, context):
         context.bot.send_message(cid, "Usage: /profile <abstract or keywords>")
         return
     active = u.get("active_profile", "default")
-    u["profiles"][active] = txt
-    u["profile"] = txt
+    profile_text = _apply_profile_analysis(u, txt, summary_override=txt)
+    u["profiles"][active] = profile_text
+    u["profile"] = profile_text
     save_user(cid)
     # HTML + escape para evitar problemas con underscores, *, etc.
     context.bot.send_message(
@@ -39,9 +59,10 @@ def pnew(update, context):
     if name in u["profiles"]:
         context.bot.send_message(cid, f"Profile '{escape(name)}' already exists. Use /puse {name}.", parse_mode=ParseMode.HTML)
         return
-    u["profiles"][name] = text or ""
+    profile_text = _apply_profile_analysis(u, text or "", summary_override=(text or ""))
+    u["profiles"][name] = profile_text
     u["active_profile"] = name
-    u["profile"] = text or ""
+    u["profile"] = profile_text
     # Reinicia historial de enviados para el nuevo perfil
     from paperradar.storage.users import get_active_sent_ids
     _ = get_active_sent_ids(u)  # solo asegura la estructura, sin limpiar
@@ -64,7 +85,8 @@ def puse(update, context):
         context.bot.send_message(cid, f"Profile '{escape(name)}' not found. Use /plist.", parse_mode=ParseMode.HTML)
         return
     u["active_profile"] = name
-    u["profile"] = u["profiles"].get(name, "")
+    stored = u["profiles"].get(name, "")
+    u["profile"] = _apply_profile_analysis(u, stored, summary_override=stored)
     # Reinicia historial de enviados al cambiar de perfil (como pediste)
     from paperradar.storage.users import get_active_sent_ids
     _ = get_active_sent_ids(u)  # solo asegura la estructura, sin limpiar
@@ -102,7 +124,8 @@ def pdel(update, context):
     if u.get("active_profile") == name:
         new_active = next(iter(u["profiles"].keys()))
         u["active_profile"] = new_active
-        u["profile"] = u["profiles"].get(new_active, "")
+        stored = u["profiles"].get(new_active, "")
+        u["profile"] = _apply_profile_analysis(u, stored, summary_override=stored)
         # Nota: NO limpiamos aquí el historial del nuevo activo (ya existía antes).
         # Si prefieres arrancar "en limpio", puedes llamar:
         # clear_sent_ids_for_active_profile(u)

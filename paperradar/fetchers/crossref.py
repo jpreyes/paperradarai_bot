@@ -3,6 +3,7 @@ import logging
 
 from paperradar.core.filters import english_only, sanitize_text, year_from_date
 from paperradar.config import CROSSREF_MAILTO
+from paperradar.fetchers.search_terms import get_search_terms, DEFAULT_TERMS
 
 
 def pass_hard_filters(blob: str) -> bool:
@@ -11,14 +12,6 @@ def pass_hard_filters(blob: str) -> bool:
     return not any(b in lb for b in bad)
 
 
-TERMS = [
-    '"operational modal analysis"', "stochastic subspace", "system identification", "structural health monitoring",
-    '"damage detection" bridge', '"damage detection" building',
-    '"soil-structure interaction" bridge', '"soil-structure interaction" building',
-    '"modal parameters" bridge', '"modal parameters" building',
-    '"seismic" bridge modal', '"seismic" building modal'
-]
-
 BASE_URL = "https://api.crossref.org/works"
 USER_AGENT = f"paperradar-bot/1.0 (mailto:{CROSSREF_MAILTO})" if CROSSREF_MAILTO else "paperradar-bot/1.0"
 
@@ -26,7 +19,9 @@ USER_AGENT = f"paperradar-bot/1.0 (mailto:{CROSSREF_MAILTO})" if CROSSREF_MAILTO
 def fetch(max_results=50):
     items = []
     headers = {"User-Agent": USER_AGENT}
-    for term in TERMS:
+    terms = get_search_terms() or list(DEFAULT_TERMS)
+    logging.debug(f"[crossref] using {len(terms)} search terms")
+    for term in terms:
         params = {
             "query": term,
             "rows": max_results,

@@ -2,12 +2,7 @@ import requests, logging
 from paperradar.core.filters import english_only, sanitize_text, year_from_date
 from paperradar.core.model import Item
 from paperradar.config import SEMANTIC_SCHOLAR_API_KEY
-
-TERMS = [
-    '"operational modal analysis"', 'stochastic subspace', 'system identification', 'structural health monitoring',
-    'damage detection bridge', 'damage detection building', 'soil-structure interaction bridge', 'soil-structure interaction building',
-    'seismic bridge modal', 'seismic building modal'
-]
+from paperradar.fetchers.search_terms import get_search_terms, DEFAULT_TERMS
 
 BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
@@ -18,7 +13,9 @@ def fetch(max_results=60):
     headers = {"x-api-key": SEMANTIC_SCHOLAR_API_KEY}
     fields = "title,abstract,year,publicationDate,venue,url,authors"
     out = []
-    for term in TERMS:
+    terms = get_search_terms() or list(DEFAULT_TERMS)
+    logging.debug(f"[semantic] using {len(terms)} search terms")
+    for term in terms:
         params = {"query": term, "limit": max_results, "fields": fields, "offset": 0}
         try:
             r = requests.get(BASE_URL, headers=headers, params=params, timeout=20)
@@ -51,4 +48,3 @@ def fetch(max_results=60):
             ).__dict__)
     logging.info(f"[semantic] total={len(out)}")
     return out
-

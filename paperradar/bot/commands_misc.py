@@ -1,5 +1,6 @@
 # paperradar/bot/commands_misc.py
 import os
+from paperradar.fetchers.search_terms import reset_terms
 from paperradar.storage.users import (
     forgetme as _forget,
     get_user,
@@ -33,6 +34,9 @@ def _reset_user_defaults(chat_id: int, u: dict) -> None:
         "llm_ondemand_max_per_hour",
         "llm_ondemand_times",
         "idle_ticks",
+        "profile_summary",
+        "profile_topics",
+        "profile_topic_weights",
     ):
         u[key] = defaults.get(key)
 
@@ -47,6 +51,7 @@ def flush(update, context):
     clear_sent_ids_for_active_profile(u)
     _reset_user_defaults(cid, u)
     _clear_history_files(cid)
+    reset_terms()
     save_user(cid)
     update.message.reply_text("🔄 Perfil activo reiniciado, historial borrado y valores restablecidos.")
     
@@ -58,5 +63,6 @@ def flushall(update, context):
     u["sent_ids"] = set()  # legacy
     _reset_user_defaults(cid, u)
     _clear_history_files(cid)
+    reset_terms()
     save_user(cid)
     update.message.reply_text("🧹 Reiniciados todos los perfiles, historial borrado y valores restablecidos.")

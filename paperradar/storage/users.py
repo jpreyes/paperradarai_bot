@@ -26,6 +26,9 @@ def default_user_state(chat_id:int)->dict:
         "llm_ondemand_max_per_hour": DEFAULT_LLM_ONDEMAND_MAX_PER_HOUR,
         "llm_ondemand_times": [],
         "idle_ticks": 0,
+        "profile_summary": "",
+        "profile_topics": [],
+        "profile_topic_weights": {},
     }
 
 def _sync_active_profile_text(u:dict):
@@ -58,6 +61,9 @@ def load_user(chat_id:int)->dict:
                 "llm_ondemand_max_per_hour": obj.get("llm_ondemand_max_per_hour", state["llm_ondemand_max_per_hour"]),
                 "llm_ondemand_times": obj.get("llm_ondemand_times", []),
                 "idle_ticks": obj.get("idle_ticks", 0),
+                "profile_summary": obj.get("profile_summary", state["profile_summary"]),
+                "profile_topics": obj.get("profile_topics", state["profile_topics"]),
+                "profile_topic_weights": obj.get("profile_topic_weights", state["profile_topic_weights"]),
             })
             # NEW: cargar enviados por perfil (listas -> sets)
             sidp = obj.get("sent_ids_by_profile", {})
@@ -116,6 +122,9 @@ def save_user(chat_id:int):
         "llm_ondemand_max_per_hour": u.get("llm_ondemand_max_per_hour", DEFAULT_LLM_ONDEMAND_MAX_PER_HOUR),
         "llm_ondemand_times": u.get("llm_ondemand_times", []),
         "idle_ticks": u.get("idle_ticks", 0),
+        "profile_summary": u.get("profile_summary",""),
+        "profile_topics": u.get("profile_topics", []),
+        "profile_topic_weights": u.get("profile_topic_weights", {}),
         # NEW: guardar enviados por perfil dentro de meta.json
         "sent_ids_by_profile": sidp_serializable,
     }
