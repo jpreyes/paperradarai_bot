@@ -45,7 +45,7 @@ def topn(update, context):
         n = int(s)
     except Exception:
         update.message.reply_text("Usage: /topn <int>"); return
-    u["topn"] = max(1, min(50, n))
+    u["topn"] = max(1, min(100, n))
     save_user(cid)
     update.message.reply_text(f"✅ topn = {u['topn']}")
 
