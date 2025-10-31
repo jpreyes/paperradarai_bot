@@ -5,6 +5,7 @@ import tempfile
 from telegram import ParseMode
 
 from paperradar.services.profile_builder import build_profile_from_pdf
+from paperradar.fetchers.search_terms import set_custom_terms
 from paperradar.storage.known_chats import register_chat
 from paperradar.storage.users import (
     clear_sent_ids_for_active_profile,
@@ -54,6 +55,7 @@ def handle_profile_pdf(update, context):
     u["profile_summary"] = analysis.get("summary", profile_text)
     u["profile_topics"] = analysis.get("topics", [])
     u["profile_topic_weights"] = analysis.get("topic_weights", {})
+    set_custom_terms(u.get("profile_topics", []))
 
     clear_sent_ids_for_active_profile(u)
     save_user(cid)

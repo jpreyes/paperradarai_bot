@@ -8,6 +8,7 @@ from paperradar.storage.users import (
 )
 from .utils import split_once, argstr
 from paperradar.services.profile_builder import analyze_text
+from paperradar.fetchers.search_terms import set_custom_terms
 
 
 def _apply_profile_analysis(u: dict, text: str, *, summary_override: str = None) -> str:
@@ -17,11 +18,14 @@ def _apply_profile_analysis(u: dict, text: str, *, summary_override: str = None)
         u["profile_summary"] = analysis["summary"]
         u["profile_topics"] = analysis["topics"]
         u["profile_topic_weights"] = analysis["topic_weights"]
-        return analysis["profile_text"]
-    u["profile_summary"] = fallback
-    u["profile_topics"] = []
-    u["profile_topic_weights"] = {}
-    return fallback
+        result = analysis["profile_text"]
+    else:
+        u["profile_summary"] = fallback
+        u["profile_topics"] = []
+        u["profile_topic_weights"] = {}
+        result = fallback
+    set_custom_terms(u.get("profile_topics", []))
+    return result
 
 def profile(update, context):
     cid = update.effective_chat.id
