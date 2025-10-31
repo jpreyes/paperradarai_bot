@@ -1,4 +1,4 @@
-import hashlib, json, logging, random, time, requests
+import hashlib, json, logging, random, time, requests, re
 from paperradar.config import OPENAI_API_KEY, LLM_MODEL
 from paperradar.storage.paths import LLM_CACHE_PATH
 
@@ -18,42 +18,57 @@ def load_llm_cache():
 def save_llm_cache():
     json.dump(LLM_CACHE, open(LLM_CACHE_PATH,"w",encoding="utf-8"), ensure_ascii=False)
 
-def _key(profile,title,abstract):
+def _key(summary, topics, title, abstract):
     h = hashlib.sha256()
-    for s in (profile or "", title or "", abstract or ""): h.update(s.encode("utf-8"))
+    topic_serial = "|".join(topics or [])
+    for s in (summary or "", topic_serial, title or "", abstract or ""):
+        h.update(s.encode("utf-8"))
     return h.hexdigest()
 
-def heuristics(profile,title,abstract):
-    import re
-    pf = re.findall(r"[a-zA-Z]{4,}", (profile or "").lower())
-    ab = re.findall(r"[a-zA-Z]{4,}", (abstract or "").lower())
-    overlap = sorted(set(pf).intersection(set(ab)))[:6]
-    sims=[]
-    if overlap: sims.append("Overlaps on: " + ", ".join(overlap[:4]))
-    if "gmpe" in (abstract or "").lower():
-        sims.append("Shared focus on GMPE performance and local adjustments.")
-    if "modal" in (abstract or "").lower() or "oma" in (abstract or "").lower():
-        sims.append("Common interest in operational/modal analysis for validation.")
-    if not sims: sims=["Methodological overlap in modeling/validation approaches."]
-    ideas=[]
-    if "gmpe" in (abstract or "").lower(): ideas.append("Test a semi-non-ergodic correction with Chilean subduction data.")
-    if "oma" in (abstract or "").lower() or "modal" in (abstract or "").lower(): ideas.append("Add OMA-based validation to benchmark conclusions.")
-    if not ideas: ideas.append("Apply spectral matching to build site-specific accelerograms for nonlinear checks.")
-    return {"similarities":sims[:3], "ideas":ideas[:2], "tag":"heur"}
+def _tokenize(text: str):
+    return re.findall(r"[a-zA-ZÁÉÍÓÚáéíóúñü]{4,}", (text or "").lower())
+
+def heuristics(summary, topics, title, abstract):
+    pf_tokens = set(_tokenize(summary))
+    pf_tokens.update(t.lower() for t in (topics or []))
+    paper_tokens = set(_tokenize((title or "") + " " + (abstract or "")))
+    overlap = sorted(pf_tokens.intersection(paper_tokens))
+    sims = []
+    if overlap:
+        sims.append("The paper references shared themes: " + ", ".join(overlap[:4]))
+    if not sims:
+        sims.append("General methodological alignment with your stated interests.")
+    ideas = []
+    topic_list = list(topics or [])
+    if topic_list:
+        ideas.append(f"Examine how this work informs your research on {topic_list[0]}.")
+    if len(topic_list) > 1:
+        ideas.append(f"Contrast the paper's approach with your focus on {topic_list[1]}.")
+    if not ideas:
+        ideas.append("Identify a concrete follow-up experiment inspired by this paper.")
+    return {"similarities": sims[:3], "ideas": ideas[:2], "tag": "heur"}
 
 load_llm_cache()
 
-def ideas(profile,title,abstract):
+def ideas(summary, topics, title, abstract):
     if not OPENAI_API_KEY:
-        out = heuristics(profile,title,abstract); out["tag"]="heur"; return out
-    key = _key(profile,title,abstract)
+        out = heuristics(summary, topics, title, abstract); out["tag"]="heur"; return out
+    key = _key(summary, topics, title, abstract)
     if key in LLM_CACHE:
         out = LLM_CACHE[key]; out["tag"]="llm_cache"; return out
-    prompt = f"""You are an assistant for a researcher in earthquake and structural engineering.
-Return JSON with:
-- similarities: 2-3 bullets of concrete overlaps
-- ideas: 1-2 bullets of specific extensions
-PROFILE:\n{profile}\nTITLE:\n{title}\nABSTRACT:\n{abstract}\n"""
+    topics_str = ", ".join(topics or [])
+    prompt = f"""You compare a researcher's interests with new papers.
+Respond in JSON with:
+- similarities: 2-3 concise bullets describing concrete commonalities
+- ideas: 1-2 actionable bullets proposing next steps or integrations
+Research summary:
+{summary}
+Key topics: {topics_str or 'n/a'}
+Paper title:
+{title}
+Paper abstract:
+{abstract}
+"""
     headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type":"application/json"}
     body={"model": LLM_MODEL, "messages":[{"role":"user","content":prompt}], "temperature":0.1, "response_format":{"type":"json_object"}}
     last=None
@@ -70,4 +85,4 @@ PROFILE:\n{profile}\nTITLE:\n{title}\nABSTRACT:\n{abstract}\n"""
             delay = (LLM_BACKOFF_BASE*(2**attempt))+random.uniform(*LLM_BACKOFF_JITTER)
             time.sleep(delay)
     logging.warning(f"[llm] failed -> {last}")
-    out = heuristics(profile,title,abstract); out["tag"]="llm_fail"; return out
+    out = heuristics(summary, topics, title, abstract); out["tag"]="llm_fail"; return out

@@ -10,10 +10,12 @@ TERMS = [
 ]
 
 BASE_URL = "https://api.springernature.com/metadata/json"
+_disabled_for_session = False
 
 
 def fetch(max_results=60):
-    if not SPRINGER_API_KEY:
+    global _disabled_for_session
+    if not SPRINGER_API_KEY or _disabled_for_session:
         return []
     out = []
     for term in TERMS:
@@ -21,9 +23,17 @@ def fetch(max_results=60):
             "q": term,
             "p": max_results,
             "api_key": SPRINGER_API_KEY,
+            "httpAccept": "application/json",
         }
         try:
             r = requests.get(BASE_URL, params=params, timeout=20)
+            if r.status_code == 401:
+                logging.error(
+                    "[springer] API key rejected (401 Unauthorized). "
+                    "Verifica SPRINGER_API_KEY o desactiva ENABLE_SPRINGER."
+                )
+                _disabled_for_session = True
+                return []
             r.raise_for_status()
             data = r.json()
         except Exception as ex:
@@ -54,4 +64,3 @@ def fetch(max_results=60):
             ).__dict__)
     logging.info(f"[springer] total={len(out)}")
     return out
-

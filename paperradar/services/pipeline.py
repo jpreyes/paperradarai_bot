@@ -11,12 +11,19 @@ def build_ranked(u:dict):
              if len(u.get("profiles",{}))>1 else u.get("likes_global",[]))
     dislikes = (u.get("dislikes_by_profile",{}).get(u.get("active_profile","default"), [])
              if len(u.get("profiles",{}))>1 else u.get("dislikes_global",[]))
-    ranked = rank_items_for_user(u.get("profile",""), likes, dislikes, items)
+    ranked = rank_items_for_user(
+        u.get("profile", ""),
+        likes,
+        dislikes,
+        items,
+        topic_weights=u.get("profile_topic_weights", {}),
+    )
     return ranked
 
 def make_bullets(u:dict, item:dict, use_llm:bool):
+    summary = u.get("profile_summary") or u.get("profile", "")
+    topics = u.get("profile_topics", [])
     if use_llm:
-        return llm_ideas(u.get("profile",""), item["title"], item.get("abstract",""))
+        return llm_ideas(summary, topics, item["title"], item.get("abstract",""))
     # FORZAR heurística cuando use_llm es False (no llamar al LLM)
-    return llm_heur(u.get("profile",""), item["title"], item.get("abstract",""))
-
+    return llm_heur(summary, topics, item["title"], item.get("abstract",""))

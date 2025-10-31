@@ -106,6 +106,7 @@ def main():
     from .commands_diag import diag
     from .commands_poll import poll_cmd  # /poll que reprograma el job global
     from .commands_jobs import jobs       # /jobs para depurar la JobQueue
+    from .handlers_docs import handle_profile_pdf
 
     dp.add_handler(CommandHandler("diag", diag))
 
@@ -148,6 +149,8 @@ def main():
 
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("sample", sample))
+    pdf_filter = Filters.document.mime_type("application/pdf") | Filters.document.mime_type("application/x-pdf")
+    dp.add_handler(MessageHandler(pdf_filter, handle_profile_pdf))
     def _auto_register(update, context):
         try:
             from paperradar.storage.known_chats import register_chat

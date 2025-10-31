@@ -33,6 +33,9 @@ def _reset_user_defaults(chat_id: int, u: dict) -> None:
         "llm_ondemand_max_per_hour",
         "llm_ondemand_times",
         "idle_ticks",
+        "profile_summary",
+        "profile_topics",
+        "profile_topic_weights",
     ):
         u[key] = defaults.get(key)
 
