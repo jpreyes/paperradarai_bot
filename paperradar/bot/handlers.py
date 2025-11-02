@@ -1,5 +1,5 @@
 from telegram import ParseMode
-from paperradar.storage.users import get_user, save_user
+from paperradar.storage.users import get_user, save_user, add_sent_id
 from paperradar.storage.known_chats import register_chat
 from paperradar.services.pipeline import build_ranked, make_bullets
 from paperradar.storage.history import upsert_history_record
@@ -34,13 +34,14 @@ def sample(update, context):
     cid = update.effective_chat.id
     register_chat(cid)
     u = get_user(cid)
+    active_profile = u.get("active_profile", "default")
     ranked = build_ranked(u)[:u.get("topn",12)]
     sent=0
     for it, sc in ranked:
         if sc < u.get("sim_threshold",0.55): continue
         bullets = make_bullets(u, it, use_llm=False)
         send_paper(context.bot, cid, it, sc, bullets)
-        upsert_history_record(cid, it, sc, bullets, note="sample")
-        u["sent_ids"].add((it.get("id") or it.get("url") or "")[:200]); sent+=1
+        upsert_history_record(cid, it, sc, bullets, note="sample", profile=active_profile)
+        add_sent_id(u, (it.get("id") or it.get("url") or "")[:200]); sent+=1
     save_user(cid)
     if sent==0: send_text(context.bot, cid, "No sample above threshold. Try lowering /tune or /topn.")

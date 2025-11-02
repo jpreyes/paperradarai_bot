@@ -144,6 +144,10 @@ def set_custom_terms(topics: Iterable[str], *, include_defaults: bool = True, ma
     if not combined:
         combined = list(DEFAULT_TERMS)
     global _cache
+    if _cache is None:
+        _cache = _load_terms()
+    if _cache == combined:
+        return list(_cache)
     _cache = combined
     _save_terms(combined)
     return list(_cache)

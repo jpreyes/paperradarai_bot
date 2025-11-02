@@ -9,6 +9,7 @@ from paperradar.config import (
 from .paths import user_path, user_dir
 
 USERS = {}
+_USER_MTIMES = {}
 
 def default_user_state(chat_id:int)->dict:
     return {
@@ -38,11 +39,13 @@ def _sync_active_profile_text(u:dict):
 def load_user(chat_id:int)->dict:
     meta_path = user_path(chat_id, "meta.json")
     state = default_user_state(chat_id)
+    mtime = None
 
     # --- meta.json ---
     if os.path.exists(meta_path):
         try:
             obj = json.load(open(meta_path,"r",encoding="utf-8"))
+            mtime = os.path.getmtime(meta_path)
             state.update({
                 "profiles": obj.get("profiles") or {"default": obj.get("profile","")},
                 "active_profile": obj.get("active_profile","default"),
@@ -84,10 +87,31 @@ def load_user(chat_id:int)->dict:
             logging.warning(f"[user] load sent_ids {chat_id} failed: {ex}")
 
     _sync_active_profile_text(state)
+    if mtime is None:
+        try:
+            mtime = os.path.getmtime(meta_path)
+        except Exception:
+            mtime = None
+    if mtime is not None:
+        _USER_MTIMES[chat_id] = mtime
     return state
 
 def get_user(chat_id:int)->dict:
-    if chat_id not in USERS:
+    existing = USERS.get(chat_id)
+    meta_path = user_path(chat_id, "meta.json")
+    try:
+        current_mtime = os.path.getmtime(meta_path)
+    except Exception:
+        current_mtime = None
+    cached_mtime = _USER_MTIMES.get(chat_id)
+    should_reload = False
+    if existing is None:
+        should_reload = True
+    elif current_mtime is not None and cached_mtime is not None and current_mtime > cached_mtime:
+        should_reload = True
+    elif current_mtime is not None and cached_mtime is None:
+        should_reload = True
+    if should_reload:
         USERS[chat_id] = load_user(chat_id)
     return USERS[chat_id]
 
@@ -130,8 +154,13 @@ def save_user(chat_id:int):
     }
 
     # Guardar meta.json
-    with open(user_path(chat_id,"meta.json"),"w",encoding="utf-8") as f:
+    meta_path = user_path(chat_id,"meta.json")
+    with open(meta_path,"w",encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
+    try:
+        _USER_MTIMES[chat_id] = os.path.getmtime(meta_path)
+    except Exception:
+        _USER_MTIMES.pop(chat_id, None)
 
     # Legacy: mantener sent_ids.json (por compatibilidad)
     with open(user_path(chat_id,"sent_ids.json"),"w",encoding="utf-8") as f:
@@ -143,6 +172,7 @@ def forgetme(chat_id:int):
     except Exception:
         pass
     USERS.pop(chat_id, None)
+    _USER_MTIMES.pop(chat_id, None)
 
 # --- Helpers para manejar sent_ids por perfil activo ----------------------------
 

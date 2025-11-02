@@ -1,9 +1,11 @@
 from paperradar.fetchers.merge import fetch_entries
+from paperradar.fetchers.search_terms import set_custom_terms
 from paperradar.core.filters import is_recent
 from paperradar.core.ranking import rank_items_for_user
 from paperradar.core.llm import ideas as llm_ideas, heuristics as llm_heur
 
 def build_ranked(u:dict):
+    set_custom_terms(u.get("profile_topics", []))
     items = fetch_entries()
     if u.get("max_age_hours",0):
         items = [it for it in items if is_recent(it.get("published",""), u["max_age_hours"])]
