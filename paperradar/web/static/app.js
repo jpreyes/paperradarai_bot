@@ -1,4 +1,4 @@
-import {
+﻿import {
   React,
   html,
   Fragment,
@@ -41,6 +41,20 @@ async function fetchJSON(url, options = {}) {
     throw new Error(message);
   }
   return response.json();
+}
+
+async function postJSON(url, body, options = {}) {
+  return fetchJSON(
+    url,
+    Object.assign(
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      options,
+    ),
+  );
 }
 
 function formatDate(value) {
@@ -528,11 +542,15 @@ function Sidebar({
   error,
   currentChatId,
   activeProfile,
+  profiles,
+  profilesLoading,
   view,
   onChatChange,
+  onProfileChange,
   onViewChange,
 }) {
   const hasUsers = users.length > 0;
+  const hasProfiles = Array.isArray(profiles) && profiles.length > 0;
 
   return html`
     <aside className="sidebar">
@@ -564,8 +582,22 @@ function Sidebar({
               })
             : html`<option value="">No hay chats registrados</option>`}
         </select>
-        <div className="menu-label">Perfil activo</div>
-        <div className="menu-value">${activeProfile || "--"}</div>
+        <label className="menu-label" htmlFor="profileSelect">
+          Perfil activo
+        </label>
+        <select
+          id="profileSelect"
+          className="menu-select"
+          value=${activeProfile ?? ""}
+          onChange=${onProfileChange}
+          disabled=${!hasProfiles || profilesLoading}
+        >
+          ${profilesLoading
+            ? html`<option value="">Cargando perfiles...</option>`
+            : hasProfiles
+            ? profiles.map((name) => html`<option key=${name} value=${name}>${name}</option>`)
+            : html`<option value="">Sin perfiles disponibles</option>`}
+        </select>
         <nav className="menu-nav">
           <button
             type="button"
@@ -621,11 +653,23 @@ function DashboardApp({ initial }) {
   const [configNonce, setConfigNonce] = useState(0);
   const { toasts, pushToast, dismissToast } = useToasts({ autoDismiss: 6000 });
   const inflightToastRef = useRef(null);
+  const profileToastRef = useRef(null);
+  const [profilePending, setProfilePending] = useState(false);
 
   useDocumentTitle(
     currentChatId != null
       ? `PaperRadar · Chat ${currentChatId}`
       : "PaperRadar Dashboard",
+  );
+
+  useEffect(
+    () => () => {
+      if (profileToastRef.current) {
+        dismissToast(profileToastRef.current);
+        profileToastRef.current = null;
+      }
+    },
+    [dismissToast],
   );
 
   const requestPapers = useCallback((mode = "history") => {
@@ -677,7 +721,17 @@ function DashboardApp({ initial }) {
         hasMore: false,
       }));
       setConfigState((prev) => ({ ...prev, data: null }));
+      setProfilePending(false);
+      if (profileToastRef.current) {
+        dismissToast(profileToastRef.current);
+        profileToastRef.current = null;
+      }
       return;
+    }
+    setProfilePending(false);
+    if (profileToastRef.current) {
+      dismissToast(profileToastRef.current);
+      profileToastRef.current = null;
     }
     setPage(0);
     setPapersState((prev) => ({
@@ -690,7 +744,7 @@ function DashboardApp({ initial }) {
     setConfigState((prev) => ({ ...prev, data: null }));
     setConfigNonce((value) => value + 1);
     requestPapers("history");
-  }, [currentChatId, requestPapers]);
+  }, [currentChatId, requestPapers, dismissToast]);
 
   useEffect(() => {
     if (currentChatId == null) return;
@@ -699,6 +753,11 @@ function DashboardApp({ initial }) {
     fetchJSON(`/users/${currentChatId}/config`, { signal: controller.signal })
       .then((data) => {
         setConfigState({ data, loading: false, error: null });
+        setProfilePending(false);
+        if (profileToastRef.current) {
+          dismissToast(profileToastRef.current);
+          profileToastRef.current = null;
+        }
       })
       .catch((err) => {
         if (err.name === "AbortError") {
@@ -709,6 +768,11 @@ function DashboardApp({ initial }) {
           loading: false,
           error: err.message || "No se pudo cargar la configuracion.",
         });
+        setProfilePending(false);
+        if (profileToastRef.current) {
+          dismissToast(profileToastRef.current);
+          profileToastRef.current = null;
+        }
         pushToast({
           tone: "error",
           title: "Configuracion",
@@ -716,7 +780,7 @@ function DashboardApp({ initial }) {
         });
       });
     return () => controller.abort();
-  }, [currentChatId, configNonce, pushToast]);
+  }, [currentChatId, configNonce, dismissToast, pushToast]);
 
   useEffect(() => {
     if (currentChatId == null) return;
@@ -901,7 +965,65 @@ function DashboardApp({ initial }) {
     requestPapers("history");
   }, [limit, page, papersState.totalRanked, requestPapers]);
 
-  const activeProfile = configState.data?.active_profile || "--";
+  const activeProfile = configState.data?.active_profile ?? "";
+  const availableProfiles = useMemo(
+    () => (Array.isArray(configState.data?.profiles) ? configState.data.profiles : []),
+    [configState.data?.profiles],
+  );
+
+  const handleProfileSelect = useCallback(
+    async (event) => {
+      if (!currentChatId) return;
+      const nextProfile = event.target?.value ?? "";
+      if (!nextProfile || configState.data?.active_profile === nextProfile) {
+        return;
+      }
+      setProfilePending(true);
+      const pendingToast = pushToast({
+        tone: "info",
+        title: "Perfil",
+        message: `Activando perfil \"${nextProfile}\"...`,
+        timeout: 0,
+      });
+      profileToastRef.current = pendingToast;
+      try {
+        const cfg = await postJSON(`/users/${currentChatId}/profiles/use`, { profile: nextProfile });
+        if (pendingToast) {
+          dismissToast(pendingToast);
+          profileToastRef.current = null;
+        }
+        setProfilePending(false);
+        setConfigState({ data: cfg, loading: false, error: null });
+        setPage(0);
+        requestPapers("history");
+        await loadUsers();
+        pushToast({
+          tone: "success",
+          title: "Perfil activo",
+          message: `Perfil \"${cfg.active_profile}\" activado.`,
+        });
+      } catch (err) {
+        if (pendingToast) {
+          dismissToast(pendingToast);
+          profileToastRef.current = null;
+        }
+        setProfilePending(false);
+        pushToast({
+          tone: "error",
+          title: "Perfil",
+          message: err.message || "No se pudo activar el perfil.",
+        });
+      }
+    },
+    [
+      currentChatId,
+      configState.data?.active_profile,
+      dismissToast,
+      loadUsers,
+      pushToast,
+      requestPapers,
+    ],
+  );
 
   return html`
     <div className="app-shell">
@@ -911,8 +1033,11 @@ function DashboardApp({ initial }) {
         error=${usersError}
         currentChatId=${currentChatId}
         activeProfile=${activeProfile}
+        profiles=${availableProfiles}
+        profilesLoading=${configState.loading || profilePending}
         view=${view}
         onChatChange=${handleChatChange}
+        onProfileChange=${handleProfileSelect}
         onViewChange=${setView}
       />
       <main className="content">
@@ -944,3 +1069,4 @@ if (container) {
   const root = createRoot(container);
   root.render(html`<${DashboardApp} initial=${initialData} />`);
 }
+

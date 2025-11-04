@@ -56,8 +56,19 @@ function profileSnippet(summary) {
   return clean.length > 60 ? `${clean.slice(0, 60)}...` : clean;
 }
 
-function Sidebar({ users, loading, error, currentChatId, onChatChange }) {
+function Sidebar({
+  users,
+  loading,
+  error,
+  currentChatId,
+  activeProfile,
+  profiles,
+  profilesLoading,
+  onChatChange,
+  onProfileChange,
+}) {
   const hasUsers = users.length > 0;
+  const hasProfiles = Array.isArray(profiles) && profiles.length > 0;
 
   return html`
     <aside className="sidebar">
@@ -95,6 +106,20 @@ function Sidebar({ users, loading, error, currentChatId, onChatChange }) {
               <span>Cargando usuarios...</span>
             </div>`
           : null}
+        <label className="menu-label" htmlFor="profileSelect">Perfil activo</label>
+        <select
+          id="profileSelect"
+          className="menu-select"
+          value=${activeProfile ?? ""}
+          onChange=${onProfileChange}
+          disabled=${!hasProfiles || profilesLoading}
+        >
+          ${profilesLoading
+            ? html`<option value="">Cargando perfiles...</option>`
+            : hasProfiles
+            ? profiles.map((profile) => html`<option key=${profile} value=${profile}>${profile}</option>`)
+            : html`<option value="">Sin perfiles disponibles</option>`}
+        </select>
         ${error ? html`<div className="menu-error">${error}</div>` : null}
         <nav className="menu-nav">
           <a className="nav-btn" href="/">Dashboard</a>
@@ -574,6 +599,7 @@ function ProfileManagerApp({ initial }) {
 
   const config = configState.data;
   const profiles = useMemo(() => (config?.profiles ? [...config.profiles] : []), [config]);
+  const activeProfile = config?.active_profile ?? "";
   const summaryText = currentChatId
     ? configState.loading
       ? "Cargando configuracion..."
@@ -584,6 +610,16 @@ function ProfileManagerApp({ initial }) {
 
   const statusClass = `upload-status${status.message ? ` ${status.tone}` : ""}`;
   const canDelete = profiles.length > 1 && Boolean(selectedProfile) && !isDeleting;
+  const profilesLoading = configState.loading || Boolean(activatingProfile);
+
+  const handleSidebarProfileChange = useCallback(
+    (event) => {
+      const value = event.target?.value ?? "";
+      if (!value || config?.active_profile === value) return;
+      handleActivateProfile(value);
+    },
+    [config?.active_profile, handleActivateProfile],
+  );
 
   return html`
     <div className="app-shell">
@@ -593,6 +629,10 @@ function ProfileManagerApp({ initial }) {
         error=${usersError}
         currentChatId=${currentChatId}
         onChatChange=${handleChatChange}
+        activeProfile=${activeProfile}
+        profiles=${profiles}
+        profilesLoading=${profilesLoading}
+        onProfileChange=${handleSidebarProfileChange}
       />
       <main className="content">
         <section id="manager-view" className="view active">
