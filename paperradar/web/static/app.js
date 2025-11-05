@@ -57,11 +57,50 @@ async function postJSON(url, body, options = {}) {
   );
 }
 
+async function patchJSON(url, body, options = {}) {
+  return fetchJSON(
+    url,
+    Object.assign(
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      options,
+    ),
+  );
+}
+
 function formatDate(value) {
   if (!value) return "--";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleString();
+}
+
+function normalizeTopicEntries(topicList, weightsMap) {
+  if (!Array.isArray(topicList) || topicList.length === 0) return [];
+  const weights = weightsMap || {};
+  return topicList.map((topic) => {
+    const weight = weights[topic];
+    return {
+      name: topic,
+      weight:
+        typeof weight === "number" && Number.isFinite(weight)
+          ? String(weight)
+          : weight != null && weight !== ""
+          ? String(weight)
+          : "",
+    };
+  });
+}
+
+function clampWeight(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const clamped = Math.min(1, Math.max(0, numeric));
+  return Math.round(clamped * 1000) / 1000;
 }
 
 function authorLabel(authors) {
@@ -430,7 +469,20 @@ function PapersView({
   `;
 }
 
-function ConfigView({ state, view }) {
+function ConfigView({
+  state,
+  view,
+  activeProfile,
+  editSummary,
+  topicEntries,
+  onSummaryChange,
+  onTopicNameChange,
+  onTopicWeightChange,
+  onTopicAdd,
+  onTopicRemove,
+  onSave,
+  saving,
+}) {
   const cfg = state.data;
   const topics = cfg?.profile_topics || [];
   const weightsEntries = Object.entries(cfg?.profile_topic_weights || {})
@@ -460,6 +512,10 @@ function ConfigView({ state, view }) {
         ["Dislikes totales", cfg.dislikes_total ?? 0],
       ]
     : [];
+  const activeProfileName = activeProfile || cfg?.active_profile || "";
+  const canEdit = Boolean(activeProfileName);
+  const topicsEditable = Array.isArray(topicEntries) ? topicEntries : [];
+  const disableEdit = !canEdit || saving;
 
   return html`
     <section id="view-config" className=${`view${view === "config" ? " active" : ""}`}>
@@ -529,6 +585,87 @@ function ConfigView({ state, view }) {
                   )}
                 </dl>
               </article>
+              <article className="card card--editor">
+                <h2>Editar perfil activo</h2>
+                <p className="hint">
+                  ${canEdit
+                    ? html`Guardando estos cambios se actualizar&aacute; el resumen y los t&eacute;rminos
+                        del perfil <strong>${activeProfileName}</strong> autom&aacute;ticamente.`
+                    : "Selecciona un usuario con perfil activo para editar."}
+                </p>
+                <div className="field-group">
+                  <label htmlFor="configSummary">Resumen / abstract</label>
+                  <textarea
+                    id="configSummary"
+                    rows=${4}
+                    value=${editSummary}
+                    onChange=${onSummaryChange}
+                    placeholder="Describe brevemente los intereses del perfil"
+                    disabled=${disableEdit}
+                  />
+                </div>
+                <div className="field-group">
+                  <label>Temas y pesos</label>
+                  <div className="topics-editor">
+                    ${topicsEditable.length
+                      ? topicsEditable.map(
+                          (topic, index) => html`<div className="topic-row" key=${`${topic.name || "topic"}-${index}`}>
+                            <input
+                              type="text"
+                              className="topic-input"
+                              placeholder="Nuevo tema"
+                              value=${topic.name}
+                              onChange=${(event) => onTopicNameChange(index, event.target.value)}
+                              disabled=${disableEdit}
+                            />
+                            <input
+                              type="number"
+                              className="topic-weight"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              placeholder="auto"
+                              value=${topic.weight ?? ""}
+                              onChange=${(event) => onTopicWeightChange(index, event.target.value)}
+                              disabled=${disableEdit}
+                            />
+                            <button
+                              type="button"
+                              className="topic-remove"
+                              onClick=${() => onTopicRemove(index)}
+                              disabled=${disableEdit}
+                            >
+                              Quitar
+                            </button>
+                          </div>`,
+                        )
+                      : html`<p className="empty-topics">Sin temas. Agrega uno nuevo para comenzar.</p>`}
+                  </div>
+                  <div className="button-row topic-actions">
+                    <button
+                      type="button"
+                      className="toolbar-btn"
+                      onClick=${onTopicAdd}
+                      disabled=${disableEdit}
+                    >
+                      Agregar tema
+                    </button>
+                  </div>
+                  <p className="hint">
+                    Ajusta los pesos entre 0 y 1. Deja el campo vacio para calcularlos automaticamente.
+                  </p>
+                </div>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="toolbar-btn primary"
+                    onClick=${onSave}
+                    disabled=${disableEdit}
+                  >
+                    ${saving ? "Guardando..." : "Guardar cambios"}
+                  </button>
+                </div>
+              </article>
             `
           : null}
       </div>
@@ -551,6 +688,12 @@ function Sidebar({
 }) {
   const hasUsers = users.length > 0;
   const hasProfiles = Array.isArray(profiles) && profiles.length > 0;
+  const currentUser = users.find((user) => user.chat_id === currentChatId);
+  const userLabel = currentUser
+    ? `Chat ${currentUser.chat_id}`
+    : currentChatId != null
+    ? `Chat ${currentChatId}`
+    : "Sin usuario";
 
   return html`
     <aside className="sidebar">
@@ -562,26 +705,14 @@ function Sidebar({
         </div>
       </header>
       <section className="menu">
-        <label className="menu-label" htmlFor="chatSelect">Chat ID</label>
-        <select
-          id="chatSelect"
-          className="menu-select"
-          value=${currentChatId ?? ""}
-          onChange=${onChatChange}
-          disabled=${!hasUsers || loading}
-        >
-          ${loading
-            ? html`<option value="">Cargando chats...</option>`
-            : hasUsers
-            ? users.map((user) => {
-                const summary = (user.profile_summary || "").trim().replace(/\s+/g, " ");
-                const snippet = summary ? summary.slice(0, 60) : "Sin resumen";
-                return html`<option key=${user.chat_id} value=${user.chat_id}>
-                  ${`${user.chat_id}  -  ${user.active_profile}  -  ${snippet}`}
-                </option>`;
-              })
-            : html`<option value="">No hay chats registrados</option>`}
-        </select>
+        <div className="menu-label">Usuario</div>
+        <div className="menu-value">${userLabel}</div>
+        ${loading
+          ? html`<div className="menu-status">
+              <${Spinner} size=${16} />
+              <span>Cargando usuarios...</span>
+            </div>`
+          : null}
         <label className="menu-label" htmlFor="profileSelect">
           Perfil activo
         </label>
@@ -655,6 +786,8 @@ function DashboardApp({ initial }) {
   const inflightToastRef = useRef(null);
   const profileToastRef = useRef(null);
   const [profilePending, setProfilePending] = useState(false);
+  const [editSummary, setEditSummary] = useState("");
+  const [editTopics, setEditTopics] = useState([]);
 
   useDocumentTitle(
     currentChatId != null
@@ -781,6 +914,19 @@ function DashboardApp({ initial }) {
       });
     return () => controller.abort();
   }, [currentChatId, configNonce, dismissToast, pushToast]);
+
+  useEffect(() => {
+    const data = configState.data;
+    const summary = data?.profile_summary ?? "";
+    const topicList = Array.isArray(data?.profile_topics) ? data.profile_topics : [];
+    const weightMap = data?.profile_topic_weights || {};
+    setEditSummary(summary);
+    setEditTopics(normalizeTopicEntries(topicList, weightMap));
+  }, [
+    configState.data?.profile_summary,
+    configState.data?.profile_topics,
+    configState.data?.profile_topic_weights,
+  ]);
 
   useEffect(() => {
     if (currentChatId == null) return;
@@ -1025,6 +1171,134 @@ function DashboardApp({ initial }) {
     ],
   );
 
+
+  const handleTopicAdd = useCallback(() => {
+    setEditTopics((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      list.push({ name: "", weight: "" });
+      return list;
+    });
+  }, []);
+
+  const handleTopicRemove = useCallback((index) => {
+    setEditTopics((prev) => {
+      if (!Array.isArray(prev)) return [];
+      return prev.filter((_, idx) => idx !== index);
+    });
+  }, []);
+
+  const handleTopicNameChange = useCallback((index, value) => {
+    setEditTopics((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      if (!list[index]) {
+        list[index] = { name: "", weight: "" };
+      }
+      list[index] = { ...list[index], name: value };
+      return list;
+    });
+  }, []);
+
+  const handleTopicWeightChange = useCallback((index, value) => {
+    setEditTopics((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      if (!list[index]) {
+        list[index] = { name: "", weight: "" };
+      }
+      list[index] = { ...list[index], weight: value };
+      return list;
+    });
+  }, []);
+
+  const handleProfileUpdate = useCallback(async () => {
+    if (!currentChatId) return;
+    const active = configState.data?.active_profile;
+    if (!active) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "No hay un perfil activo para actualizar.",
+      });
+      return;
+    }
+    const trimmedSummary = (editSummary ?? "").trim();
+    const topicEntries = Array.isArray(editTopics) ? editTopics : [];
+    const topics = [];
+    const topicWeights = {};
+    for (const entry of topicEntries) {
+      const name = (entry?.name || "").trim();
+      if (!name) continue;
+      if (!topics.includes(name)) {
+        topics.push(name);
+      }
+      const weightValue = clampWeight(entry?.weight);
+      if (weightValue !== null) {
+        topicWeights[name] = weightValue;
+      }
+    }
+    setProfilePending(true);
+    const pendingToast = pushToast({
+      tone: "info",
+      title: "Perfil",
+      message: "Guardando cambios del perfil...",
+      timeout: 0,
+    });
+    profileToastRef.current = pendingToast;
+    try {
+      const payload = {
+        summary: trimmedSummary,
+        topics,
+      };
+      if (Object.keys(topicWeights).length > 0) {
+        payload.topic_weights = topicWeights;
+      }
+      const cfg = await patchJSON(
+        `/users/${currentChatId}/profiles/${encodeURIComponent(active)}`,
+        payload,
+      );
+      if (pendingToast) {
+        dismissToast(pendingToast);
+        profileToastRef.current = null;
+      }
+      setProfilePending(false);
+      setConfigState({ data: cfg, loading: false, error: null });
+      setEditSummary(cfg.profile_summary || "");
+      setEditTopics(
+        normalizeTopicEntries(
+          Array.isArray(cfg.profile_topics) ? cfg.profile_topics : [],
+          cfg.profile_topic_weights || {},
+        ),
+      );
+      setPage(0);
+      requestPapers("history");
+      await loadUsers();
+      pushToast({
+        tone: "success",
+        title: "Perfil",
+        message: "Perfil actualizado correctamente.",
+      });
+    } catch (err) {
+      if (pendingToast) {
+        dismissToast(pendingToast);
+        profileToastRef.current = null;
+      }
+      setProfilePending(false);
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: err.message || "No se pudieron guardar los cambios.",
+      });
+    }
+  }, [
+    configState.data?.active_profile,
+    currentChatId,
+    dismissToast,
+    editSummary,
+    editTopics,
+    loadUsers,
+    pushToast,
+    requestPapers,
+  ]);
+
   return html`
     <div className="app-shell">
       <${Sidebar}
@@ -1057,7 +1331,20 @@ function DashboardApp({ initial }) {
           onPrev=${handlePrevPage}
           onNext=${handleNextPage}
         />
-        <${ConfigView} state=${configState} view=${view} />
+        <${ConfigView}
+          state=${configState}
+          view=${view}
+          activeProfile=${activeProfile}
+          editSummary=${editSummary}
+          onSummaryChange=${(event) => setEditSummary(event.target.value)}
+          topicEntries=${editTopics}
+          onTopicNameChange=${handleTopicNameChange}
+          onTopicWeightChange=${handleTopicWeightChange}
+          onTopicAdd=${handleTopicAdd}
+          onTopicRemove=${handleTopicRemove}
+          onSave=${handleProfileUpdate}
+          saving=${profilePending}
+        />
       </main>
       <${ToastHost} toasts=${toasts} onDismiss=${dismissToast} />
     </div>
@@ -1069,4 +1356,5 @@ if (container) {
   const root = createRoot(container);
   root.render(html`<${DashboardApp} initial=${initialData} />`);
 }
+
 

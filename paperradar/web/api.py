@@ -233,6 +233,8 @@ def user_config(chat_id: int):
         "profile_text": state.get("profile", ""),
         "profile_topics": state.get("profile_topics", []),
         "profile_topic_weights": state.get("profile_topic_weights", {}),
+        "profiles_data": state.get("profiles", {}),
+        "profile_overrides": state.get("profile_overrides", {}),
         "sim_threshold": state.get("sim_threshold"),
         "topn": state.get("topn"),
         "max_age_hours": state.get("max_age_hours"),
@@ -256,6 +258,12 @@ class ProfileCreatePayload(BaseModel):
 
 class ProfileSwitchPayload(BaseModel):
     profile: str
+
+
+class ProfileUpdatePayload(BaseModel):
+    summary: str | None = None
+    topics: List[str] | None = None
+    topic_weights: Dict[str, float] | None = None
 
 
 @app.post("/users/{chat_id}/profiles")
@@ -282,6 +290,7 @@ def profile_create(chat_id: int, payload: ProfileCreatePayload):
         topics = []
         weights = {}
     profiles[name] = profile_text
+    user_state.setdefault("profile_overrides", {}).pop(name, None)
     if payload.set_active:
         user_state["active_profile"] = name
         user_state["profile"] = profile_text
@@ -313,6 +322,86 @@ def profile_use(chat_id: int, payload: ProfileSwitchPayload):
     return user_config(chat_id)
 
 
+@app.patch("/users/{chat_id}/profiles/{profile_name}")
+def profile_update(chat_id: int, profile_name: str, payload: ProfileUpdatePayload):
+    user_state = _ensure_user(chat_id)
+    name = (profile_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre de perfil invalido.")
+    profiles = user_state.setdefault("profiles", {})
+    if name not in profiles:
+        raise HTTPException(status_code=404, detail=f"Perfil '{name}' no encontrado")
+    if payload.summary is None and payload.topics is None and payload.topic_weights is None:
+        raise HTTPException(status_code=400, detail="No se proporcionaron cambios.")
+
+    overrides = user_state.setdefault("profile_overrides", {})
+    entry = overrides.get(name, {}).copy()
+
+    is_active = user_state.get("active_profile") == name
+
+    if payload.summary is not None:
+        summary = (payload.summary or "").strip()
+        entry["summary"] = summary
+        profiles[name] = summary
+        if is_active:
+            user_state["profile"] = summary
+            user_state["profile_summary"] = summary
+
+    topics_changed = payload.topics is not None or payload.topic_weights is not None
+
+    if topics_changed:
+        existing_topics = entry.get("topics") or []
+        if not existing_topics and is_active:
+            existing_topics = user_state.get("profile_topics", [])
+
+        if payload.topics is not None:
+            topics = [t.strip() for t in (payload.topics or []) if t and t.strip()]
+        else:
+            topics = [t for t in existing_topics if t]
+
+        weights_payload = payload.topic_weights or {}
+        existing_weights = entry.get("topic_weights") or {}
+        if not existing_weights and is_active:
+            existing_weights = user_state.get("profile_topic_weights", {})
+
+        weights: Dict[str, float] = {}
+        for topic in topics:
+            value = weights_payload.get(topic)
+            if value is None:
+                value = existing_weights.get(topic)
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                num = None
+            if num is not None:
+                weights[topic] = max(0.0, min(1.0, round(num, 3)))
+
+        if not weights and topics:
+            if len(topics) == 1:
+                weights = {topics[0]: 1.0}
+            else:
+                span = max(len(topics) - 1, 1)
+                weights = {
+                    topic: round(1.0 - (idx / span), 3)
+                    for idx, topic in enumerate(topics)
+                }
+
+        entry["topics"] = topics
+        entry["topic_weights"] = weights
+        if is_active:
+            user_state["profile_topics"] = topics
+            user_state["profile_topic_weights"] = weights
+            set_custom_terms(topics)
+
+    overrides[name] = entry
+
+    if is_active:
+        clear_sent_ids_for_active_profile(user_state)
+
+    save_user(chat_id)
+    return user_config(chat_id)
+
+
 @app.delete("/users/{chat_id}/profiles/{profile_name}")
 def profile_delete(chat_id: int, profile_name: str):
     user_state = _ensure_user(chat_id)
@@ -324,6 +413,7 @@ def profile_delete(chat_id: int, profile_name: str):
         raise HTTPException(status_code=400, detail="No puedes eliminar el unico perfil disponible.")
     del profiles[name]
     user_state.setdefault("sent_ids_by_profile", {}).pop(name, None)
+    user_state.setdefault("profile_overrides", {}).pop(name, None)
     _remove_profile_history(chat_id, name)
     if user_state.get("active_profile") == name:
         new_active = next(iter(profiles.keys()))
@@ -408,6 +498,7 @@ async def profile_upload_pdf(
     if profile not in user_state["profiles"]:
         user_state["profiles"][profile] = ""
     user_state["active_profile"] = profile
+    user_state.setdefault("profile_overrides", {}).pop(profile, None)
 
     if file.content_type not in ("application/pdf", "application/x-pdf"):
         raise HTTPException(status_code=400, detail="Solo se aceptan archivos PDF.")

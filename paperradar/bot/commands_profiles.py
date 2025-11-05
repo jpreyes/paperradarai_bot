@@ -12,6 +12,28 @@ from paperradar.fetchers.search_terms import set_custom_terms
 
 
 def _apply_profile_analysis(u: dict, text: str, *, summary_override: str = None) -> str:
+    overrides = u.get("profile_overrides") or {}
+    active = u.get("active_profile")
+    override_payload = overrides.get((active or "").strip())
+    if override_payload:
+        summary = (override_payload.get("summary") or summary_override or text or "").strip()
+        topics = override_payload.get("topics") or []
+        weights = override_payload.get("topic_weights") or {}
+        if topics and not weights:
+            if len(topics) == 1:
+                weights = {topics[0]: 1.0}
+            else:
+                span = max(len(topics) - 1, 1)
+                weights = {
+                    topic: round(1.0 - (idx / span), 3)
+                    for idx, topic in enumerate(topics)
+                }
+        u["profile_summary"] = summary
+        u["profile_topics"] = topics
+        u["profile_topic_weights"] = weights
+        set_custom_terms(topics)
+        return summary
+
     analysis = analyze_text(text, summary_override=summary_override)
     fallback = (summary_override if summary_override is not None else text or "").strip()
     if analysis:

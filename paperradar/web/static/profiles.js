@@ -42,11 +42,44 @@ async function postJSON(url, body) {
   });
 }
 
+async function patchJSON(url, body) {
+  return fetchJSON(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 function formatDate(value) {
   if (!value) return "--";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleString();
+}
+
+function normalizeTopicEntries(topicList, weightsMap) {
+  if (!Array.isArray(topicList) || topicList.length === 0) return [];
+  const weights = weightsMap || {};
+  return topicList.map((topic) => {
+    const weight = weights[topic];
+    return {
+      name: topic,
+      weight:
+        typeof weight === "number" && Number.isFinite(weight)
+          ? String(weight)
+          : weight != null && weight !== ""
+          ? String(weight)
+          : "",
+    };
+  });
+}
+
+function clampWeight(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const clamped = Math.min(1, Math.max(0, numeric));
+  return Math.round(clamped * 1000) / 1000;
 }
 
 function profileSnippet(summary) {
@@ -69,6 +102,16 @@ function Sidebar({
 }) {
   const hasUsers = users.length > 0;
   const hasProfiles = Array.isArray(profiles) && profiles.length > 0;
+  const userOptions = users.map((user, index) => {
+    const indexLabel = `Usuario ${index + 1}`;
+    const summary = profileSnippet(user.profile_summary || "");
+    const badge = user.active_profile ? ` - ${user.active_profile}` : "";
+    return {
+      value: user.chat_id,
+      label: `${indexLabel}${badge} - ${summary}`.replace(/\s+/g, " ").trim(),
+    };
+  });
+  const currentOption = userOptions.find((option) => option.value === currentChatId);
 
   return html`
     <aside className="sidebar">
@@ -80,7 +123,7 @@ function Sidebar({
         </div>
       </header>
       <section className="menu">
-        <label className="menu-label" htmlFor="chatSelect">Chat ID</label>
+        <label className="menu-label" htmlFor="chatSelect">Usuario</label>
         <select
           id="chatSelect"
           className="menu-select"
@@ -91,15 +134,15 @@ function Sidebar({
           ${loading
             ? html`<option value="">Cargando chats...</option>`
             : hasUsers
-            ? users.map(
-                (user) => html`<option key=${user.chat_id} value=${user.chat_id}>
-                  ${`${user.chat_id} - ${user.active_profile || "default"} - ${profileSnippet(
-                    user.profile_summary || "",
-                  )}`}
-                </option>`,
+            ? userOptions.map(
+                (option) =>
+                  html`<option key=${option.value} value=${option.value}>${option.label}</option>`,
               )
             : html`<option value="">Sin chats disponibles</option>`}
         </select>
+        ${currentOption && currentChatId != null
+          ? html`<div className="menu-hint">ID: ${currentChatId}</div>`
+          : null}
         ${loading
           ? html`<div className="menu-status">
               <${Spinner} size=${16} />
@@ -301,6 +344,9 @@ function ProfileManagerApp({ initial }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [activatingProfile, setActivatingProfile] = useState(null);
+  const [editSummary, setEditSummary] = useState("");
+  const [editTopics, setEditTopics] = useState([]);
+  const [isSaving, setIsSaving] = useState(false);
   const fileInputRef = useRef(null);
   const { toasts, pushToast, dismissToast } = useToasts({ autoDismiss: 6000 });
 
@@ -320,8 +366,8 @@ function ProfileManagerApp({ initial }) {
 
   useDocumentTitle(
     currentChatId != null
-      ? `PaperRadar · Perfiles · Chat ${currentChatId}`
-      : "PaperRadar · Perfiles",
+      ? `PaperRadar - Perfiles - Chat ${currentChatId}`
+      : "PaperRadar - Perfiles",
   );
 
   const loadUsers = useCallback(async () => {
@@ -398,6 +444,34 @@ function ProfileManagerApp({ initial }) {
     setSelectedProfile(cfg.active_profile || cfg.profiles[0]);
   }, [configState.data, selectedProfile]);
 
+  useEffect(() => {
+    const cfg = configState.data;
+    if (!cfg || !selectedProfile) {
+      setEditSummary("");
+      setEditTopics([]);
+      return;
+    }
+    const overrides = cfg.profile_overrides || {};
+    const profilesData = cfg.profiles_data || {};
+    const overrideEntry = overrides[selectedProfile] || {};
+    const summary =
+      overrideEntry.summary ??
+      (selectedProfile === cfg.active_profile
+        ? cfg.profile_summary
+        : profilesData[selectedProfile]) ??
+      "";
+    const topics =
+      overrideEntry.topics ??
+      (selectedProfile === cfg.active_profile ? cfg.profile_topics : []);
+    const weights =
+      overrideEntry.topic_weights ??
+      (selectedProfile === cfg.active_profile ? cfg.profile_topic_weights : {});
+    setEditSummary(summary || "");
+    setEditTopics(
+      normalizeTopicEntries(Array.isArray(topics) ? topics : [], weights || {}),
+    );
+  }, [configState.data, selectedProfile]);
+
   const handleChatChange = useCallback(
     (event) => {
       const value = Number(event.target.value);
@@ -414,6 +488,124 @@ function ProfileManagerApp({ initial }) {
     },
     [showStatus],
   );
+
+  const handleTopicAdd = useCallback(() => {
+    setEditTopics((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      list.push({ name: "", weight: "" });
+      return list;
+    });
+  }, []);
+
+  const handleTopicRemove = useCallback((index) => {
+    setEditTopics((prev) => {
+      if (!Array.isArray(prev)) return [];
+      return prev.filter((_, idx) => idx !== index);
+    });
+  }, []);
+
+  const handleTopicNameChange = useCallback((index, value) => {
+    setEditTopics((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      if (!list[index]) {
+        list[index] = { name: "", weight: "" };
+      }
+      list[index] = { ...list[index], name: value };
+      return list;
+    });
+  }, []);
+
+  const handleTopicWeightChange = useCallback((index, value) => {
+    setEditTopics((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      if (!list[index]) {
+        list[index] = { name: "", weight: "" };
+      }
+      list[index] = { ...list[index], weight: value };
+      return list;
+    });
+  }, []);
+
+  const handleSaveOverrides = useCallback(async () => {
+    if (!currentChatId || !selectedProfile) {
+      showStatus("Selecciona un usuario y un perfil para guardar.", "error", {
+        flash: true,
+        title: "Perfiles",
+      });
+      return;
+    }
+    const profileName = selectedProfile;
+    const summary = (editSummary ?? "").trim();
+    const topicEntries = Array.isArray(editTopics) ? editTopics : [];
+    const topics = [];
+    const topicWeights = {};
+    for (const entry of topicEntries) {
+      const name = (entry?.name || "").trim();
+      if (!name) continue;
+      if (!topics.includes(name)) {
+        topics.push(name);
+      }
+      const weightValue = clampWeight(entry?.weight);
+      if (weightValue !== null) {
+        topicWeights[name] = weightValue;
+      }
+    }
+    setIsSaving(true);
+    showStatus("Guardando cambios...", "info");
+    try {
+      const cfg = await patchJSON(
+        `/users/${currentChatId}/profiles/${encodeURIComponent(profileName)}`,
+        {
+          summary,
+          topics,
+          ...(Object.keys(topicWeights).length > 0 ? { topic_weights: topicWeights } : {}),
+        },
+      );
+      setConfigState({ data: cfg, loading: false, error: null });
+      setSelectedProfile(profileName);
+      const overrides = cfg.profile_overrides || {};
+      const profilesData = cfg.profiles_data || {};
+      const overrideEntry = overrides[profileName] || {};
+      const updatedTopics =
+        overrideEntry.topics ??
+        (profileName === cfg.active_profile ? cfg.profile_topics : []);
+      const updatedWeights =
+        overrideEntry.topic_weights ??
+        (profileName === cfg.active_profile ? cfg.profile_topic_weights : {});
+      const updatedSummary =
+        overrideEntry.summary ??
+        (profileName === cfg.active_profile
+          ? cfg.profile_summary
+          : profilesData[profileName]) ??
+        "";
+      setEditSummary(updatedSummary || "");
+      setEditTopics(
+        normalizeTopicEntries(
+          Array.isArray(updatedTopics) ? updatedTopics : [],
+          updatedWeights || {},
+        ),
+      );
+      await loadUsers();
+      showStatus("Perfil actualizado.", "success", {
+        flash: true,
+        title: "Perfil actualizado",
+      });
+    } catch (err) {
+      showStatus(err.message || "No se pudieron guardar los cambios.", "error", {
+        flash: true,
+        title: "Perfiles",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    currentChatId,
+    editSummary,
+    editTopics,
+    loadUsers,
+    selectedProfile,
+    showStatus,
+  ]);
 
   const handleActivateProfile = useCallback(
     async (name) => {
@@ -600,17 +792,48 @@ function ProfileManagerApp({ initial }) {
   const config = configState.data;
   const profiles = useMemo(() => (config?.profiles ? [...config.profiles] : []), [config]);
   const activeProfile = config?.active_profile ?? "";
-  const summaryText = currentChatId
-    ? configState.loading
-      ? "Cargando configuracion..."
-      : config
-      ? config.profile_summary || "Sin resumen disponible."
-      : configState.error || "Sin datos disponibles."
-    : "Selecciona un chat para ver su configuracion.";
+  const overridesMap = config?.profile_overrides || {};
+  const profilesData = config?.profiles_data || {};
+  const selectedOverride = selectedProfile ? overridesMap[selectedProfile] || {} : {};
+  const selectedSummary =
+    selectedProfile == null || !config
+      ? ""
+      : (selectedOverride.summary ??
+          (selectedProfile === activeProfile
+            ? config.profile_summary
+            : profilesData[selectedProfile])) || "";
+  const selectedTopics =
+    selectedProfile == null || !config
+      ? []
+      : selectedOverride.topics ??
+        (selectedProfile === activeProfile ? config.profile_topics || [] : []);
+  const selectedWeights =
+    selectedProfile == null || !config
+      ? {}
+      : selectedOverride.topic_weights ??
+        (selectedProfile === activeProfile ? config.profile_topic_weights || {} : {});
+
+  let summaryText = "Selecciona un usuario para ver su configuracion.";
+  if (currentChatId != null) {
+    if (configState.loading) {
+      summaryText = "Cargando configuracion...";
+    } else if (!config) {
+      summaryText = configState.error || "Sin datos disponibles.";
+    } else if (!selectedProfile) {
+      summaryText = "Selecciona un perfil de la lista.";
+    } else {
+      summaryText = selectedSummary || "Sin resumen disponible.";
+    }
+  }
 
   const statusClass = `upload-status${status.message ? ` ${status.tone}` : ""}`;
   const canDelete = profiles.length > 1 && Boolean(selectedProfile) && !isDeleting;
   const profilesLoading = configState.loading || Boolean(activatingProfile);
+  const canSaveOverrides =
+    Boolean(currentChatId && selectedProfile) && !isSaving && !configState.loading;
+  const topicsEditable = Array.isArray(editTopics) ? editTopics : [];
+  const disableEditor =
+    !currentChatId || !selectedProfile || configState.loading || isSaving;
 
   const handleSidebarProfileChange = useCallback(
     (event) => {
@@ -650,8 +873,8 @@ function ProfileManagerApp({ initial }) {
             </article>
 
             <${TopicsCard}
-              topics=${config?.profile_topics || []}
-              weights=${config?.profile_topic_weights || {}}
+              topics=${selectedTopics}
+              weights=${selectedWeights}
               loading=${configState.loading}
             />
 
@@ -663,6 +886,88 @@ function ProfileManagerApp({ initial }) {
               onActivate=${handleActivateProfile}
               activatingProfile=${activatingProfile}
             />
+
+            <div className="card profile-editor">
+              <h2>Editar perfil</h2>
+              <p className="hint">
+                ${selectedProfile
+                  ? html`Estas editando <strong>${selectedProfile}</strong>. Los cambios se aplican
+                      al guardar.`
+                  : "Selecciona un perfil para poder editarlo."}
+              </p>
+              <div className="field-group">
+                <label htmlFor="profileSummary">Resumen / abstract</label>
+                <textarea
+                  id="profileSummary"
+                  rows=${4}
+                  value=${editSummary}
+                  onChange=${(event) => setEditSummary(event.target.value)}
+                  placeholder="Describe brevemente los intereses del perfil"
+                  disabled=${disableEditor}
+                />
+              </div>
+              <div className="field-group">
+                <label>Temas y pesos</label>
+                <div className="topics-editor">
+                  ${topicsEditable.length
+                    ? topicsEditable.map(
+                        (topic, index) => html`<div className="topic-row" key=${`${topic.name || "topic"}-${index}`}>
+                          <input
+                            type="text"
+                            className="topic-input"
+                            placeholder="Nuevo tema"
+                            value=${topic.name}
+                            onChange=${(event) => handleTopicNameChange(index, event.target.value)}
+                            disabled=${disableEditor}
+                          />
+                          <input
+                            type="number"
+                            className="topic-weight"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            placeholder="auto"
+                            value=${topic.weight ?? ""}
+                            onChange=${(event) => handleTopicWeightChange(index, event.target.value)}
+                            disabled=${disableEditor}
+                          />
+                          <button
+                            type="button"
+                            className="topic-remove"
+                            onClick=${() => handleTopicRemove(index)}
+                            disabled=${disableEditor}
+                          >
+                            Quitar
+                          </button>
+                        </div>`,
+                      )
+                    : html`<p className="empty-topics">Sin temas. Agrega uno nuevo para comenzar.</p>`}
+                </div>
+                <div className="button-row topic-actions">
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    onClick=${handleTopicAdd}
+                    disabled=${disableEditor}
+                  >
+                    Agregar tema
+                  </button>
+                </div>
+                <p className="hint">
+                  Ajusta los pesos entre 0 y 1. Deja el campo vacio para calcularlos automaticamente.
+                </p>
+              </div>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="toolbar-btn primary"
+                  onClick=${handleSaveOverrides}
+                  disabled=${!canSaveOverrides}
+                >
+                  ${isSaving ? "Guardando..." : "Guardar cambios"}
+                </button>
+              </div>
+            </div>
 
             <${PreferencesCard} config=${config} loading=${configState.loading} />
             <${StatusCard} config=${config} loading=${configState.loading} />
