@@ -2,15 +2,27 @@
 import os, io, zipfile, time
 from paperradar.storage.users import get_user, save_user
 from paperradar.storage.paths import user_path
+from paperradar.storage.history import user_history_json, user_history_csv
 from paperradar.core.llm import save_llm_cache
 
 def export(update, context):
     cid = update.effective_chat.id
-    jpath = user_path(cid, "history.json")
+    u = get_user(cid)
+    active = u.get("active_profile", "default")
+    jpath = user_history_json(cid, active)
     if not os.path.exists(jpath):
-        update.message.reply_text("No history to export yet."); return
+        legacy = user_history_json(cid)
+        if not os.path.exists(legacy):
+            update.message.reply_text("No history to export yet."); return
+        jpath = legacy
+    filename = os.path.basename(jpath)
     with open(jpath, "rb") as f:
-        context.bot.send_document(chat_id=cid, document=f, filename="history.json", disable_content_type_detection=True)
+        context.bot.send_document(
+            chat_id=cid,
+            document=f,
+            filename=filename,
+            disable_content_type_detection=True,
+        )
 
 def backup(update, context):
     cid = update.effective_chat.id
@@ -29,11 +41,20 @@ def backup(update, context):
 
 def clear_history(update, context):
     cid = update.effective_chat.id
-    for fn in ("history.json","history.csv"):
-        p = user_path(cid, fn)
+    u = get_user(cid)
+    active = u.get("active_profile", "default")
+    targets = {
+        user_history_json(cid, active),
+        user_history_csv(cid, active),
+        user_history_json(cid),
+        user_history_csv(cid),
+    }
+    for p in targets:
         if os.path.exists(p):
-            try: os.remove(p)
-            except Exception: pass
+            try:
+                os.remove(p)
+            except Exception:
+                pass
     update.message.reply_text("🧹 Cleared history files.")
 
 def clear_llmcache(update, context):

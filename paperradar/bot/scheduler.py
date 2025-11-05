@@ -55,6 +55,7 @@ def tick(context):
                     save_user(cid)  # guarda la marca de tiempo
                     continue
 
+                active_profile = u.get("active_profile", "default")
                 ranked_full = build_ranked(u)
                 llm_budget  = int(u.get("llm_max_per_tick", 2))
                 used_llm    = 0
@@ -146,7 +147,7 @@ def tick(context):
                     if not in_fallback_digest:
                         add_sent_id(u, pk)
 
-                    upsert_history_record(cid, it, sc, bullets, note="tick")
+                    upsert_history_record(cid, it, sc, bullets, note="tick", profile=active_profile)
                     sent += 1
 
                 # Si hubo envíos, resetea contador idle

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>PaperRadar Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <header class="brand">
+        <span class="logo">PR</span>
+        <div>
+          <h1>PaperRadar</h1>
+          <p class="subtitle">Visualizador</p>
+        </div>
+      </header>
+      <section class="menu">
+        <label class="menu-label" for="chatSelect">Chat ID</label>
+        <select id="chatSelect" class="menu-select"></select>
+        <div class="menu-label">Perfil activo</div>
+        <div id="activeProfile" class="menu-value">--</div>
+        <nav class="menu-nav">
+          <button class="nav-btn active" data-view="papers">Papers</button>
+          <button class="nav-btn" data-view="config">Configuracion</button>
+          <a class="nav-btn" href="/profiles">Perfiles</a>
+        </nav>
+      </section>
+      <footer class="menu-footer">
+        <p>Datos compartidos con el bot.</p>
+        <p class="hint">Los terminos de busqueda siguen al perfil activo.</p>
+      </footer>
+    </aside>
+    <main class="content">
+      <section id="view-papers" class="view active">
+        <div class="toolbar">
+          <div class="toolbar-group">
+            <label for="sortSelect">Ordenar por</label>
+            <select id="sortSelect">
+              <option value="score">Similitud</option>
+              <option value="published">Fecha publicacion</option>
+              <option value="venue">Revista</option>
+              <option value="authors">Autores</option>
+              <option value="fetched_at">Fecha recogida</option>
+            </select>
+          </div>
+          <div class="toolbar-group">
+            <label for="sortDir">Sentido</label>
+            <select id="sortDir">
+              <option value="desc">Descendente</option>
+              <option value="asc">Ascendente</option>
+            </select>
+          </div>
+          <div class="toolbar-group">
+            <label for="limitInput">Limite</label>
+            <input id="limitInput" type="number" min="5" max="200" step="5" value="25">
+          </div>
+          <div class="toolbar-group toolbar-actions">
+            <button id="historyBtn" class="toolbar-btn">Recargar historial</button>
+            <button id="refreshBtn" class="toolbar-btn primary">Actualizar (live)</button>
+          </div>
+        </div>
+        <div class="pagination">
+          <button id="prevPage" class="pagination-btn" disabled>&larr; Anterior</button>
+          <div id="pageInfo" class="pagination-info">Pagina 1 de 1</div>
+          <button id="nextPage" class="pagination-btn" disabled>Siguiente &rarr;</button>
+        </div>
+        <div id="papersCount" class="section-meta"></div>
+        <div id="papersTable" class="table-wrapper"></div>
+        <div id="papersEmpty" class="empty-state hidden">No hay resultados para este perfil.</div>
+      </section>
+      <section id="view-config" class="view">
+        <div class="config-grid">
+          <article class="card">
+            <h2>Resumen del perfil</h2>
+            <p id="configSummary" class="summary"></p>
+          </article>
+          <article class="card">
+            <h2>Temas</h2>
+            <ul id="configTopics" class="tags"></ul>
+            <div id="configTopicWeights" class="weights"></div>
+          </article>
+          <article class="card">
+            <h2>Preferencias</h2>
+            <dl class="properties" id="configPreferences"></dl>
+          </article>
+          <article class="card">
+            <h2>Estado</h2>
+            <dl class="properties" id="configStatus"></dl>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    window.__PAPERRADAR_INITIAL__ = {{ initial_data | tojson }};
+  </script>
+  <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+</body>
+</html>

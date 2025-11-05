@@ -1,4 +1,4 @@
-from paperradar.storage.users import get_user, save_user
+from paperradar.storage.users import get_user, save_user, get_active_sent_ids, add_sent_id
 from paperradar.storage.known_chats import register_chat
 from paperradar.services.pipeline import build_ranked, make_bullets
 from paperradar.storage.history import upsert_history_record
@@ -8,6 +8,7 @@ def ticknow(update, context):
     register_chat(cid)
     u = get_user(cid)
 
+    active_profile = u.get("active_profile", "default")
     ranked_full = build_ranked(u)
     llm_budget = int(u.get("llm_max_per_tick", 2))
     used_llm = 0
@@ -15,11 +16,12 @@ def ticknow(update, context):
     topN = int(u.get("topn", 12))
     thr  = float(u.get("sim_threshold", 0.55))
 
+    already = get_active_sent_ids(u)
     for it, sc in ranked_full:
         if sent >= topN or sc < thr:
             continue
         pk = (it.get("id") or it.get("url") or "")[:200]
-        if pk in u.get("sent_ids", set()):  # evita duplicar
+        if pk in already:  # evita duplicar
             continue
 
         use_llm = u.get("llm_enabled", False) and used_llm < llm_budget and sc >= u.get("llm_threshold", 0.70)
@@ -31,8 +33,9 @@ def ticknow(update, context):
         from .handlers import send_paper
         send_paper(context.bot, cid, it, sc, bullets)
 
-        u["sent_ids"].add(pk)
-        upsert_history_record(cid, it, sc, bullets, note="ticknow")
+        add_sent_id(u, pk)
+        already.add(pk)
+        upsert_history_record(cid, it, sc, bullets, note="ticknow", profile=active_profile)
         sent += 1
 
     save_user(cid)
