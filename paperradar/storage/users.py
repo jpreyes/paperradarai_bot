@@ -107,6 +107,7 @@ def load_user(chat_id:int)->dict:
                 "profile_summary": obj.get("profile_summary", state["profile_summary"]),
                 "profile_topics": obj.get("profile_topics", state["profile_topics"]),
                 "profile_topic_weights": obj.get("profile_topic_weights", state["profile_topic_weights"]),
+                "web_passcode": obj.get("web_passcode", state["web_passcode"]),
             })
             # NEW: cargar enviados por perfil (listas -> sets)
             sidp = obj.get("sent_ids_by_profile", {})
