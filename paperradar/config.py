@@ -26,9 +26,13 @@ DEFAULT_MAX_AGE_HOURS     = int(os.getenv("MAX_AGE_HOURS", "0"))
 
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "").strip()
 LLM_MODEL       = os.getenv("LLM_MODEL", "gpt-4o-mini")
+OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
 DEFAULT_LLM_THRESHOLD    = float(os.getenv("LLM_THRESHOLD", "0.70"))
 DEFAULT_LLM_MAX_PER_TICK = int(os.getenv("LLM_MAX_PER_TICK", "2"))
 DEFAULT_LLM_ONDEMAND_MAX_PER_HOUR = int(os.getenv("LLM_ONDEMAND_MAX_PER_HOUR", "5"))
+DEFAULT_JOURNAL_TOPN = int(os.getenv("JOURNAL_TOP_N", "9"))
+DEFAULT_JOURNAL_LLM_TOP = int(os.getenv("JOURNAL_LLM_TOP", "4"))
+DEFAULT_PAPER_EMBED_MAX = int(os.getenv("PAPER_EMBED_MAX", "12"))
 
 TELEGRAM_MAX_DOC_MB    = 49
 TELEGRAM_MAX_DOC_BYTES = TELEGRAM_MAX_DOC_MB * 1024 * 1024
