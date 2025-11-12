@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Fo
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 import tempfile
 
 from paperradar.config import POLL_DAILY_TIME
@@ -294,7 +294,11 @@ def auth_magic_consume(request: Request, token: str):
 
 
 @app.post("/auth/pin/verify")
-def auth_pin_verify(payload: PinVerifyPayload):
+def auth_pin_verify(raw: dict = Body(...)):
+    try:
+        payload = PinVerifyPayload(**raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     chat_id = payload.chat_id
     user_state = _ensure_user(chat_id)
     expected = user_state.get("web_passcode") or get_web_passcode(chat_id)
@@ -359,6 +363,8 @@ class MagicLinkRequestPayload(BaseModel):
 class PinVerifyPayload(BaseModel):
     chat_id: int
     pin: str
+
+PinVerifyPayload.model_rebuild()
 
 
 @app.post("/users/{chat_id}/profiles")
