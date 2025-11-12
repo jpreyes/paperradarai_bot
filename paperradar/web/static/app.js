@@ -24,7 +24,26 @@ const SORT_OPTIONS = [
   { value: "venue", label: "Revista" },
   { value: "authors", label: "Autores" },
   { value: "fetched_at", label: "Fecha recogida" },
+  { value: "analysis", label: "Tipo analisis (LLM/Heur)" },
 ];
+
+const JOURNAL_SORT_OPTIONS = [
+  { value: "score", label: "Score combinado" },
+  { value: "fit_score", label: "Fit LLM" },
+  { value: "similarity", label: "Similitud vectorial" },
+  { value: "topic_overlap", label: "Coincidencia de temas" },
+  { value: "title", label: "Titulo" },
+  { value: "analysis", label: "Tipo analisis (LLM/Heur)" },
+];
+
+const DEFAULT_JOURNAL_STATE = {
+  items: [],
+  loading: false,
+  error: null,
+  catalogSize: 0,
+  generatedAt: null,
+  usedEmbeddings: false,
+};
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, options);
@@ -115,6 +134,43 @@ function clampLimit(value) {
   return Math.min(200, Math.max(5, Math.round(numeric)));
 }
 
+function formatNumber(value, digits = 2) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "--";
+  return Number(value).toFixed(digits);
+}
+
+function formatPercent(value, digits = 1) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function formatCurrency(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const formatted = numeric.toLocaleString("en-US", {
+    minimumFractionDigits: numeric >= 1000 ? 0 : 2,
+    maximumFractionDigits: numeric >= 1000 ? 0 : 2,
+  });
+  return `USD ${formatted}`;
+}
+
+function sanitizeTags(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry ?? "").trim())
+      .filter((entry) => entry.length > 0);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/[,;]/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+  }
+  return [];
+}
+
 function encodeKey(value) {
   try {
     return encodeURIComponent(value ?? "");
@@ -148,6 +204,8 @@ function extractor(entry, key) {
       const ts = Date.parse(entry?.fetched_at);
       return Number.isNaN(ts) ? null : ts;
     }
+    case "analysis":
+      return (entry?.bullets?.tag || "").toString();
     default:
       return null;
   }
@@ -160,6 +218,67 @@ function sortPapers(items, key, direction) {
   copy.sort((a, b) => {
     const av = extractor(a, key);
     const bv = extractor(b, key);
+    if (av === bv) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === "number" && typeof bv === "number") {
+      return av < bv ? -dir : dir;
+    }
+    return av < bv ? -dir : dir;
+  });
+  return copy;
+}
+
+function loadPinSessions() {
+  try {
+    const raw = globalThis.localStorage?.getItem("paperradarPins");
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch (_err) {
+    /* ignore */
+  }
+  return {};
+}
+
+function persistPinSessions(data) {
+  try {
+    globalThis.localStorage?.setItem("paperradarPins", JSON.stringify(data));
+  } catch (_err) {
+    /* ignore */
+  }
+}
+
+function journalExtractor(entry, key) {
+  const journal = entry?.journal || {};
+  const analysis = entry?.analysis || {};
+  switch (key) {
+    case "score":
+      return entry?.score ?? 0;
+    case "fit_score":
+      return analysis?.fit_score ?? 0;
+    case "similarity":
+      return entry?.similarity ?? 0;
+    case "topic_overlap":
+      return entry?.topic_overlap ?? 0;
+    case "title":
+      return (journal.title || "").toLowerCase();
+    case "analysis":
+      return (analysis.tag || "").toString();
+    default:
+      return null;
+  }
+}
+
+function sortJournals(items, key, direction) {
+  const source = Array.isArray(items) ? items : [];
+  const copy = [...source];
+  const dir = direction === "asc" ? 1 : -1;
+  copy.sort((a, b) => {
+    const av = journalExtractor(a, key);
+    const bv = journalExtractor(b, key);
     if (av === bv) return 0;
     if (av == null) return 1;
     if (bv == null) return -1;
@@ -274,6 +393,128 @@ function PaperCard({ entry }) {
   `;
 }
 
+function JournalCard({ entry }) {
+  const journal = entry?.journal || {};
+  const analysis = entry?.analysis || {};
+  const topics = sanitizeTags(journal.topics?.length ? journal.topics : journal.keywords);
+  const categories = sanitizeTags(journal.categories);
+  const chips = (topics.length ? topics : categories).slice(0, 4);
+  const reasons = Array.isArray(analysis.reasons) ? analysis.reasons : [];
+  const risks = Array.isArray(analysis.risks) ? analysis.risks : [];
+  const metrics = journal.metrics || {};
+  const impactValue = metrics.impact_factor ?? metrics.if;
+  const sjrValue = metrics.sjr ?? metrics["SJR"];
+  const speedWeeksRaw = journal?.speed?.avg_weeks_to_decision ?? journal?.speed?.weeks;
+  const speedWeeks = Number(speedWeeksRaw);
+  const speedLabel =
+    Number.isFinite(speedWeeks) && speedWeeks > 0 ? `${speedWeeks} sem` : "--";
+  const apcLabel = formatCurrency(journal.apc_usd);
+  const fitValue =
+    typeof analysis.fit_score === "number" && Number.isFinite(analysis.fit_score)
+      ? Math.max(0, Math.min(1, analysis.fit_score))
+      : null;
+  const analysisTag = analysis.tag ? String(analysis.tag).toUpperCase() : "HEUR";
+  const similarityValue =
+    typeof entry?.similarity === "number" && Number.isFinite(entry.similarity)
+      ? Math.max(-1, Math.min(1, entry.similarity))
+      : 0;
+  const topicOverlap =
+    typeof entry?.topic_overlap === "number" && entry.topic_overlap >= 0
+      ? Math.min(1, entry.topic_overlap)
+      : 0;
+
+  return html`
+    <article className="journal-card">
+      <header className="journal-card__header">
+        <div className="journal-card__headings">
+          <div className="journal-card__rank">#${entry?.rank ?? "--"}</div>
+          <div>
+            <p className="journal-card__publisher">${journal.publisher || journal.country || "Revista"}</p>
+            <h3 className="journal-card__title">${journal.title || "Sin titulo"}</h3>
+            ${journal.website
+              ? html`<a className="journal-card__link" href=${journal.website} target="_blank" rel="noopener noreferrer">
+                  Visitar sitio
+                </a>`
+              : null}
+            ${chips.length
+              ? html`<div className="journal-card__chips">
+                  ${chips.map((chip) => html`<span key=${chip} className="journal-chip">${chip}</span>`)}
+                </div>`
+              : null}
+          </div>
+        </div>
+        <div className="journal-card__score">
+          <div>
+            <span className="score-label">Score</span>
+            <span className="score-value">${formatNumber(entry?.score ?? 0, 3)}</span>
+          </div>
+          <div>
+            <span className="score-label">Similitud</span>
+            <span className="score-value">${formatPercent(similarityValue)}</span>
+          </div>
+          <div>
+            <span className="score-label">Temas</span>
+            <span className="score-value">${formatPercent(topicOverlap)}</span>
+          </div>
+        </div>
+      </header>
+      <section className="journal-card__analysis">
+        <div className="journal-card__analysis-head">
+          <span className="analysis-tag">${analysisTag}</span>
+          <span className="analysis-score">${fitValue !== null ? formatPercent(fitValue, 0) : "--"}</span>
+        </div>
+        <p className="journal-card__summary">
+          ${analysis.fit_summary || "Sin analisis disponible para esta revista."}
+        </p>
+        <div className="journal-card__lists">
+          ${reasons.length
+            ? html`<div>
+                <h4>Razones</h4>
+                <ul>
+                  ${reasons.slice(0, 3).map((reason, idx) => html`<li key=${`reason-${idx}`}>${reason}</li>`)}
+                </ul>
+              </div>`
+            : null}
+          ${risks.length
+            ? html`<div>
+                <h4>Riesgos</h4>
+                <ul>
+                  ${risks.slice(0, 3).map((risk, idx) => html`<li key=${`risk-${idx}`}>${risk}</li>`)}
+                </ul>
+              </div>`
+            : null}
+        </div>
+      </section>
+      <footer className="journal-card__footer">
+        <div className="journal-card__stat">
+          <span>Impact factor</span>
+          <strong>${impactValue != null ? formatNumber(Number(impactValue), 2) : "--"}</strong>
+        </div>
+        <div className="journal-card__stat">
+          <span>SJR</span>
+          <strong>${sjrValue != null ? formatNumber(Number(sjrValue), 2) : "--"}</strong>
+        </div>
+        <div className="journal-card__stat">
+          <span>Decision</span>
+          <strong>${speedLabel}</strong>
+        </div>
+        <div className="journal-card__stat">
+          <span>Acceso</span>
+          <strong>${journal.open_access ? "Abierto" : "Cerrado"}</strong>
+        </div>
+        <div className="journal-card__stat">
+          <span>APC</span>
+          <strong>${apcLabel ?? "--"}</strong>
+        </div>
+        <div className="journal-card__stat">
+          <span>Pais</span>
+          <strong>${journal.country || "--"}</strong>
+        </div>
+      </footer>
+    </article>
+  `;
+}
+
 function PapersView({
   chatId,
   page,
@@ -290,6 +531,13 @@ function PapersView({
   onPrev,
   onNext,
 }) {
+  if (!chatId) {
+    return html`
+      <section id="view-papers" className=${`view${view === "papers" ? " active" : ""}`}>
+        <div className="empty-state">Selecciona un usuario y valida el PIN para ver los papers.</div>
+      </section>
+    `;
+  }
   const sortedItems = useMemo(
     () => sortPapers(papersState.items, sortKey, sortDir),
     [papersState.items, sortKey, sortDir],
@@ -469,7 +717,161 @@ function PapersView({
   `;
 }
 
+function JournalsView({
+  chatId,
+  view,
+  state,
+  limit,
+  limitInput,
+  sortKey,
+  sortDir,
+  onSortKeyChange,
+  onSortDirChange,
+  onLimitInputChange,
+  onRefresh,
+  ingesting,
+}) {
+  if (!chatId) {
+    return html`
+      <section id="view-journals" className=${`view${view === "journals" ? " active" : ""}`}>
+        <div className="empty-state">Selecciona un usuario y valida el PIN para ver las revistas.</div>
+      </section>
+    `;
+  }
+  const showSkeleton = state.loading && (!state.items || state.items.length === 0);
+  const emptyState =
+    !state.loading && !state.error && (!state.items || state.items.length === 0);
+  const embeddingsLabel = state.usedEmbeddings ? "Embeddings activos" : "Modo heuristico";
+  const sortedItems = useMemo(
+    () => sortJournals(state.items, sortKey, sortDir),
+    [state.items, sortKey, sortDir],
+  );
+
+  const skeletonCards = useMemo(
+    () =>
+      Array.from({ length: Math.min(6, limit || 6) }).map(
+        (_, idx) => html`<article key=${`journal-skeleton-${idx}`} className="journal-card journal-card--skeleton">
+          <div className="journal-card__header">
+            <div className="journal-card__headings">
+              <${Skeleton} width="40px" height="18px" />
+              <div className="skeleton-stack">
+                <${Skeleton} width="160px" height="18px" />
+                <${Skeleton} width="120px" height="14px" />
+              </div>
+            </div>
+            <div className="journal-card__score">
+              <${Skeleton} width="60px" height="24px" radius="12px" />
+            </div>
+          </div>
+          <div className="journal-card__analysis">
+            <${Skeleton} width="100%" height="14px" />
+            <${Skeleton} width="95%" height="12px" />
+          </div>
+          <div className="journal-card__footer">
+            <${Skeleton} width="80px" height="16px" />
+            <${Skeleton} width="80px" height="16px" />
+          </div>
+        </article>`,
+      ),
+    [limit],
+  );
+
+  const cards = sortedItems.map((entry, idx) =>
+    html`<${JournalCard}
+      key=${entry.journal_id || entry?.journal?.title || `journal-${idx}`}
+      entry=${entry}
+    />`,
+  );
+
+  return html`
+    <section id="view-journals" className=${`view${view === "journals" ? " active" : ""}`}>
+      <div className="toolbar">
+        <div className="toolbar-group">
+          <label htmlFor="journalSort">Ordenar por</label>
+          <select id="journalSort" value=${sortKey} onChange=${onSortKeyChange}>
+            ${JOURNAL_SORT_OPTIONS.map(
+              (option) =>
+                html`<option key=${option.value} value=${option.value}>${option.label}</option>`,
+            )}
+          </select>
+        </div>
+        <div className="toolbar-group">
+          <label htmlFor="journalSortDir">Sentido</label>
+          <select id="journalSortDir" value=${sortDir} onChange=${onSortDirChange}>
+            <option value="desc">Descendente</option>
+            <option value="asc">Ascendente</option>
+          </select>
+        </div>
+        <div className="toolbar-group">
+          <label htmlFor="journalLimit">Resultados</label>
+          <input
+            id="journalLimit"
+            type="number"
+            min="1"
+            max="30"
+            value=${limitInput}
+            onChange=${onLimitInputChange}
+          />
+        </div>
+        <div className="toolbar-meta">
+          <span>Catalogo: ${state.catalogSize ?? 0}</span>
+          <span>Generado: ${state.generatedAt ? formatDate(state.generatedAt) : "--"}</span>
+          <span>${embeddingsLabel}</span>
+        </div>
+        <div className="toolbar-group toolbar-actions">
+          <button
+            type="button"
+            className="toolbar-btn primary"
+            onClick=${onRefresh}
+            disabled=${!chatId || state.loading || ingesting}
+          >
+            ${ingesting ? "Buscando catalogo..." : "Actualizar catalogo"}
+          </button>
+        </div>
+      </div>
+
+      ${state.error ? html`<div className="error">${state.error}</div>` : null}
+
+      <div className="cards-wrapper">
+        <div className="journals-grid">
+          ${showSkeleton ? skeletonCards : cards}
+        </div>
+        ${state.loading && cards.length
+          ? html`<div className="table-overlay">
+              <${Spinner} size=${20} />
+              <span>Actualizando recomendaciones...</span>
+            </div>`
+          : null}
+        ${ingesting
+          ? html`<div className="table-overlay">
+              <${Spinner} size=${20} />
+              <span>Descargando revistas de Crossref...</span>
+            </div>`
+          : null}
+      </div>
+
+      ${emptyState
+        ? html`<div className="empty-state-wrapper">
+            <${EmptyState}
+              title="Sin recomendaciones"
+              message="Crea o selecciona un perfil para generar coincidencias con revistas."
+              action=${html`<button
+                type="button"
+                className="toolbar-btn"
+                onClick=${onRefresh}
+                disabled=${!chatId}
+              >
+                Reintentar
+              </button>`}
+            />
+          </div>`
+        : null}
+    </section>
+  `;
+}
+
 function ConfigView({
+  chatId,
   state,
   view,
   activeProfile,
@@ -482,6 +884,28 @@ function ConfigView({
   onTopicRemove,
   onSave,
   saving,
+  ingestText,
+  onIngestTextChange,
+  onIngestSubmit,
+  ingestingText,
+  pdfInputRef,
+  onPdfUpload,
+  uploadingPdf,
+  onDeleteProfile,
+  deletingProfile,
+  canDeleteProfile,
+  newProfileName,
+  onNewProfileNameChange,
+  newProfileText,
+  onNewProfileTextChange,
+  onCreateProfile,
+  creatingProfile,
+  magicEmail,
+  onMagicEmailChange,
+  magicLinkData,
+  magicLinkLoading,
+  onMagicLinkRequest,
+  magicLinkHistory,
 }) {
   const cfg = state.data;
   const topics = cfg?.profile_topics || [];
@@ -516,6 +940,23 @@ function ConfigView({
   const canEdit = Boolean(activeProfileName);
   const topicsEditable = Array.isArray(topicEntries) ? topicEntries : [];
   const disableEdit = !canEdit || saving;
+  const hasAbstractInput = Boolean((ingestText || "").trim());
+  const disableAbstractAction = !canEdit || ingestingText || !hasAbstractInput;
+  const disablePdfAction = !canEdit || uploadingPdf;
+  const disableDeleteAction = !canDeleteProfile || deletingProfile;
+  const newProfileReady = Boolean((newProfileName || "").trim());
+  const disableCreateAction = creatingProfile || !newProfileReady;
+
+  if (!chatId) {
+    return html`
+      <section id="view-config" className=${`view${view === "config" ? " active" : ""}`}>
+        <div className="card">
+          <h2>Protegido por PIN</h2>
+          <p>Selecciona un usuario y valida el PIN para administrar su configuracion.</p>
+        </div>
+      </section>
+    `;
+  }
 
   return html`
     <section id="view-config" className=${`view${view === "config" ? " active" : ""}`}>
@@ -666,6 +1107,154 @@ function ConfigView({
                   </button>
                 </div>
               </article>
+              <article className="card profile-tools">
+                <h2>Actualizar perfil activo</h2>
+                <p className="hint">
+                  ${canEdit
+                    ? html`Los cambios se aplicar&aacute;n a <strong>${activeProfileName}</strong>.`
+                    : "Selecciona un perfil desde el menu lateral."}
+                </p>
+                <div className="field-group">
+                  <label htmlFor="profileAbstract">Nuevo abstract</label>
+                  <textarea
+                    id="profileAbstract"
+                    rows=${4}
+                    placeholder="Pega aqui el abstract o descripcion completa"
+                    value=${ingestText}
+                    onChange=${onIngestTextChange}
+                    disabled=${!canEdit || ingestingText}
+                  />
+                </div>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    onClick=${onIngestSubmit}
+                    disabled=${disableAbstractAction}
+                  >
+                    ${ingestingText ? "Procesando..." : "Aplicar abstract"}
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-btn danger"
+                    onClick=${onDeleteProfile}
+                    disabled=${disableDeleteAction}
+                  >
+                    ${deletingProfile ? "Eliminando..." : "Eliminar perfil"}
+                  </button>
+                </div>
+                ${!canDeleteProfile
+                  ? html`<p className="hint">Necesitas al menos otro perfil para poder eliminar el actual.</p>`
+                  : null}
+                <div className="field-group">
+                  <label htmlFor="profilePdf">Actualizar desde PDF</label>
+                  <input
+                    id="profilePdf"
+                    type="file"
+                    accept="application/pdf"
+                    ref=${pdfInputRef}
+                    disabled=${!canEdit || uploadingPdf}
+                  />
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    onClick=${onPdfUpload}
+                    disabled=${disablePdfAction}
+                  >
+                    ${uploadingPdf ? "Subiendo..." : "Subir PDF"}
+                  </button>
+                  <p className="hint">Analizaremos el PDF para extraer resumen, temas y pesos.</p>
+                </div>
+              </article>
+              <article className="card profile-create">
+                <h2>Crear nuevo perfil</h2>
+                <p className="hint">Se activar&aacute; inmediatamente despu&eacute;s de crearlo.</p>
+                <div className="field-group">
+                  <label htmlFor="newProfileName">Nombre</label>
+                  <input
+                    id="newProfileName"
+                    type="text"
+                    maxLength=${60}
+                    placeholder="Nombre del perfil"
+                    value=${newProfileName}
+                    onChange=${onNewProfileNameChange}
+                  />
+                </div>
+                <div className="field-group">
+                  <label htmlFor="newProfileText">Abstract / intereses (opcional)</label>
+                  <textarea
+                    id="newProfileText"
+                    rows=${3}
+                    placeholder="Describe brevemente los intereses del nuevo perfil"
+                    value=${newProfileText}
+                    onChange=${onNewProfileTextChange}
+                  />
+                </div>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="toolbar-btn primary"
+                    onClick=${onCreateProfile}
+                    disabled=${disableCreateAction}
+                  >
+                    ${creatingProfile ? "Creando..." : "Crear y activar"}
+                  </button>
+                </div>
+              </article>
+              <article className="card magic-link-card">
+                <h2>Registro web (magic link)</h2>
+                <p className="hint">
+                  Genera un enlace de acceso y comp&aacute;rtelo con investigadores que no usan Telegram.
+                </p>
+                <div className="field-group">
+                  <label htmlFor="magicEmail">Correo electr&oacute;nico</label>
+                  <input
+                    id="magicEmail"
+                    type="email"
+                    placeholder="investigador@ejemplo.com"
+                    value=${magicEmail}
+                    onChange=${onMagicEmailChange}
+                  />
+                </div>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="toolbar-btn primary"
+                    onClick=${onMagicLinkRequest}
+                    disabled=${magicLinkLoading}
+                  >
+                    ${magicLinkLoading ? "Generando..." : "Generar link"}
+                  </button>
+                </div>
+                ${magicLinkData
+                  ? html`<div className="magic-link-output">
+                      <p>Enlace generado:</p>
+                      <code>${magicLinkData.absoluteUrl || ""}</code>
+                      <p>PIN: <strong>${magicLinkData.pin || "------"}</strong></p>
+                      <p className="hint">
+                        ID asignado: <strong>${magicLinkData.chat_id}</strong>. Comparte el link para
+                        que active su panel.
+                      </p>
+                    </div>`
+                  : null}
+              </article>
+              ${magicLinkHistory && magicLinkHistory.length
+                ? html`<article className="card magic-link-card">
+                    <h2>Links generados</h2>
+                    <div className="magic-history">
+                      ${magicLinkHistory.map(
+                        (entry, index) => html`<div key=${`${entry.email}-${index}`} className="magic-history__item">
+                          <p><strong>Correo:</strong> ${entry.email}</p>
+                          <p><strong>Chat ID:</strong> ${entry.chat_id}</p>
+                          <p><strong>PIN:</strong> ${entry.pin || "------"}</p>
+                          <p><strong>Link:</strong></p>
+                          <code>${entry.absoluteUrl || entry.login_url || ""}</code>
+                          <p className="hint">${formatDate(entry.generated_at)}</p>
+                        </div>`,
+                      )}
+                    </div>
+                  </article>`
+                : null}
             `
           : null}
       </div>
@@ -682,9 +1271,19 @@ function Sidebar({
   profiles,
   profilesLoading,
   view,
-  onChatChange,
   onProfileChange,
   onViewChange,
+  isAuthorized,
+  loginChatId,
+  onLoginChatChange,
+  loginPin,
+  onLoginPinChange,
+  onLoginSubmit,
+  loginError,
+  loginLoading,
+  savedSessions,
+  onSavedSessionSelect,
+  onLogoutChat,
 }) {
   const hasUsers = users.length > 0;
   const hasProfiles = Array.isArray(profiles) && profiles.length > 0;
@@ -705,47 +1304,104 @@ function Sidebar({
         </div>
       </header>
       <section className="menu">
-        <div className="menu-label">Usuario</div>
-        <div className="menu-value">${userLabel}</div>
+        ${!isAuthorized
+          ? html`
+              <div className="login-card">
+                <label className="menu-label" htmlFor="loginChat">Chat ID</label>
+                <input
+                  id="loginChat"
+                  className="menu-select"
+                  type="number"
+                  min="1"
+                  placeholder="Ej. 8455728091"
+                  value=${loginChatId}
+                  onChange=${onLoginChatChange}
+                />
+                <label className="menu-label" htmlFor="loginPin">PIN</label>
+                <input
+                  id="loginPin"
+                  className="menu-select"
+                  type="password"
+                  placeholder="PIN"
+                  value=${loginPin}
+                  onChange=${onLoginPinChange}
+                />
+                ${loginError ? html`<div className="menu-error">${loginError}</div>` : null}
+                <button
+                  type="button"
+                  className="toolbar-btn primary"
+                  onClick=${onLoginSubmit}
+                  disabled=${loginLoading}
+                >
+                  ${loginLoading ? "Ingresando..." : "Iniciar sesion"}
+                </button>
+                ${savedSessions.length
+                  ? html`<div className="session-list">
+                      <p className="hint">Sesiones recordadas:</p>
+                      ${savedSessions.map(
+                        (chatId) => html`<button
+                          type="button"
+                          className="toolbar-btn"
+                          onClick=${() => onSavedSessionSelect(chatId)}
+                        >
+                          Chat ${chatId}
+                        </button>`,
+                      )}
+                    </div>`
+                  : null}
+              </div>
+            `
+          : html`
+              <div className="menu-value">${userLabel}</div>
+              <label className="menu-label" htmlFor="profileSelect">
+                Perfil activo
+              </label>
+              <select
+                id="profileSelect"
+                className="menu-select"
+                value=${activeProfile ?? ""}
+                onChange=${onProfileChange}
+                disabled=${!hasProfiles || profilesLoading}
+              >
+                ${profilesLoading
+                  ? html`<option value="">Cargando perfiles...</option>`
+                  : hasProfiles
+                  ? profiles.map((name) => html`<option key=${name} value=${name}>${name}</option>`)
+                  : html`<option value="">Sin perfiles disponibles</option>`}
+              </select>
+              <nav className="menu-nav">
+                <button
+                  type="button"
+                  className=${`nav-btn${view === "papers" ? " active" : ""}`}
+                  onClick=${() => onViewChange("papers")}
+                >
+                  Papers
+                </button>
+                <button
+                  type="button"
+                  className=${`nav-btn${view === "journals" ? " active" : ""}`}
+                  onClick=${() => onViewChange("journals")}
+                >
+                  Revistas
+                </button>
+                <button
+                  type="button"
+                  className=${`nav-btn${view === "config" ? " active" : ""}`}
+                  onClick=${() => onViewChange("config")}
+                >
+                  Configuracion
+                </button>
+              </nav>
+              <button type="button" className="toolbar-btn danger" onClick=${onLogoutChat}>
+                Cerrar sesion
+              </button>
+            `}
         ${loading
           ? html`<div className="menu-status">
               <${Spinner} size=${16} />
               <span>Cargando usuarios...</span>
             </div>`
           : null}
-        <label className="menu-label" htmlFor="profileSelect">
-          Perfil activo
-        </label>
-        <select
-          id="profileSelect"
-          className="menu-select"
-          value=${activeProfile ?? ""}
-          onChange=${onProfileChange}
-          disabled=${!hasProfiles || profilesLoading}
-        >
-          ${profilesLoading
-            ? html`<option value="">Cargando perfiles...</option>`
-            : hasProfiles
-            ? profiles.map((name) => html`<option key=${name} value=${name}>${name}</option>`)
-            : html`<option value="">Sin perfiles disponibles</option>`}
-        </select>
-        <nav className="menu-nav">
-          <button
-            type="button"
-            className=${`nav-btn${view === "papers" ? " active" : ""}`}
-            onClick=${() => onViewChange("papers")}
-          >
-            Papers
-          </button>
-          <button
-            type="button"
-            className=${`nav-btn${view === "config" ? " active" : ""}`}
-            onClick=${() => onViewChange("config")}
-          >
-            Configuracion
-          </button>
-          <a className="nav-btn" href="/profiles">Perfiles</a>
-        </nav>
         ${error ? html`<div className="menu-error">${error}</div>` : null}
       </section>
       <footer className="menu-footer">
@@ -760,7 +1416,25 @@ function DashboardApp({ initial }) {
   const [users, setUsers] = useState([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState(null);
-  const [currentChatId, setCurrentChatId] = useState(initial.defaultChatId ?? null);
+  const pinSessionsRef = useRef(loadPinSessions());
+  const [pinSessions, setPinSessions] = useState(pinSessionsRef.current);
+  const [currentChatId, setCurrentChatId] = useState(() => {
+    let stored = null;
+    try {
+      const raw = globalThis.localStorage?.getItem("paperradarChatId");
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        stored = parsed;
+      }
+    } catch (_err) {
+      /* ignore */
+    }
+    if (stored && pinSessionsRef.current[stored]) {
+      return stored;
+    }
+    const first = Object.keys(pinSessionsRef.current)[0];
+    return first ? Number(first) : null;
+  });
   const [view, setView] = useState("papers");
   const [sortKey, setSortKey] = useState("score");
   const [sortDir, setSortDir] = useState("desc");
@@ -781,6 +1455,23 @@ function DashboardApp({ initial }) {
     loading: false,
     error: null,
   });
+  const [journalsState, setJournalsState] = useState({ ...DEFAULT_JOURNAL_STATE });
+  const [journalLimit, setJournalLimit] = useState(9);
+  const [journalLimitInput, setJournalLimitInput] = useState(9);
+  const [journalNonce, setJournalNonce] = useState(0);
+  const [journalIngesting, setJournalIngesting] = useState(false);
+  const [journalSortKey, setJournalSortKey] = useState("fit_score");
+  const [journalSortDir, setJournalSortDir] = useState("desc");
+  const [magicEmail, setMagicEmail] = useState("");
+  const [magicLinkData, setMagicLinkData] = useState(null);
+  const [magicLinkPending, setMagicLinkPending] = useState(false);
+  const [magicLinkHistory, setMagicLinkHistory] = useState([]);
+  const [loginChatIdInput, setLoginChatIdInput] = useState("");
+  const [loginPinInput, setLoginPinInput] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const isAuthorized = currentChatId != null;
+  const effectiveChatId = isAuthorized ? currentChatId : null;
   const [configNonce, setConfigNonce] = useState(0);
   const { toasts, pushToast, dismissToast } = useToasts({ autoDismiss: 6000 });
   const inflightToastRef = useRef(null);
@@ -788,6 +1479,14 @@ function DashboardApp({ initial }) {
   const [profilePending, setProfilePending] = useState(false);
   const [editSummary, setEditSummary] = useState("");
   const [editTopics, setEditTopics] = useState([]);
+  const [ingestText, setIngestText] = useState("");
+  const [uploadingPdf, setUploadingPdf] = useState(false);
+  const [ingestingProfile, setIngestingProfile] = useState(false);
+  const [deletingProfile, setDeletingProfile] = useState(false);
+  const [creatingProfile, setCreatingProfile] = useState(false);
+  const [newProfileName, setNewProfileName] = useState("");
+  const [newProfileText, setNewProfileText] = useState("");
+  const fileInputRef = useRef(null);
 
   useDocumentTitle(
     currentChatId != null
@@ -845,7 +1544,19 @@ function DashboardApp({ initial }) {
   }, [loadUsers]);
 
   useEffect(() => {
-    if (currentChatId == null) {
+    try {
+      if (currentChatId != null && Number.isFinite(currentChatId) && currentChatId > 0) {
+        globalThis.localStorage?.setItem("paperradarChatId", String(currentChatId));
+      } else {
+        globalThis.localStorage?.removeItem("paperradarChatId");
+      }
+    } catch (_err) {
+      /* ignore */
+    }
+  }, [currentChatId]);
+
+  useEffect(() => {
+    if (!isAuthorized) {
       setPapersState((prev) => ({
         ...prev,
         items: [],
@@ -854,6 +1565,7 @@ function DashboardApp({ initial }) {
         hasMore: false,
       }));
       setConfigState((prev) => ({ ...prev, data: null }));
+      setJournalsState({ ...DEFAULT_JOURNAL_STATE });
       setProfilePending(false);
       if (profileToastRef.current) {
         dismissToast(profileToastRef.current);
@@ -877,10 +1589,10 @@ function DashboardApp({ initial }) {
     setConfigState((prev) => ({ ...prev, data: null }));
     setConfigNonce((value) => value + 1);
     requestPapers("history");
-  }, [currentChatId, requestPapers, dismissToast]);
+  }, [currentChatId, isAuthorized, requestPapers, dismissToast]);
 
   useEffect(() => {
-    if (currentChatId == null) return;
+    if (!isAuthorized) return;
     const controller = new AbortController();
     setConfigState({ data: null, loading: true, error: null });
     fetchJSON(`/users/${currentChatId}/config`, { signal: controller.signal })
@@ -913,7 +1625,7 @@ function DashboardApp({ initial }) {
         });
       });
     return () => controller.abort();
-  }, [currentChatId, configNonce, dismissToast, pushToast]);
+  }, [currentChatId, isAuthorized, configNonce, dismissToast, pushToast]);
 
   useEffect(() => {
     const data = configState.data;
@@ -922,6 +1634,7 @@ function DashboardApp({ initial }) {
     const weightMap = data?.profile_topic_weights || {};
     setEditSummary(summary);
     setEditTopics(normalizeTopicEntries(topicList, weightMap));
+    setIngestText("");
   }, [
     configState.data?.profile_summary,
     configState.data?.profile_topics,
@@ -929,7 +1642,43 @@ function DashboardApp({ initial }) {
   ]);
 
   useEffect(() => {
-    if (currentChatId == null) return;
+    if (!isAuthorized) {
+      setJournalsState({ ...DEFAULT_JOURNAL_STATE });
+      setJournalIngesting(false);
+      return;
+    }
+    const controller = new AbortController();
+    setJournalsState((prev) => ({ ...prev, loading: true, error: null }));
+    fetchJSON(`/users/${currentChatId}/journals?limit=${journalLimit}`, {
+      signal: controller.signal,
+    })
+      .then((payload) => {
+        setJournalsState({
+          items: Array.isArray(payload?.items) ? payload.items : [],
+          loading: false,
+          error: null,
+          catalogSize: payload?.catalog_size ?? payload?.catalogSize ?? 0,
+          generatedAt: payload?.generated_at ?? payload?.generatedAt ?? null,
+          usedEmbeddings: Boolean(payload?.used_embeddings),
+        });
+      })
+      .catch((err) => {
+        if (err.name === "AbortError") {
+          return;
+        }
+        const message = err.message || "No se pudieron cargar las revistas.";
+        setJournalsState((prev) => ({ ...prev, loading: false, error: message }));
+        pushToast({
+          tone: "error",
+          title: "Revistas",
+          message,
+        });
+      });
+    return () => controller.abort();
+  }, [currentChatId, isAuthorized, journalLimit, journalNonce, pushToast]);
+
+  useEffect(() => {
+    if (!isAuthorized) return;
     if (papersRequest.nonce === 0) return;
 
     const controller = new AbortController();
@@ -1040,16 +1789,7 @@ function DashboardApp({ initial }) {
       });
 
     return () => controller.abort();
-  }, [currentChatId, limit, page, papersRequest, requestPapers, dismissToast, pushToast]);
-
-  const handleChatChange = useCallback((event) => {
-    const value = Number(event.target.value);
-    if (!Number.isFinite(value)) {
-      setCurrentChatId(null);
-      return;
-    }
-    setCurrentChatId(value);
-  }, []);
+  }, [currentChatId, isAuthorized, limit, page, papersRequest, requestPapers, dismissToast, pushToast]);
 
   const handleSortKeyChange = useCallback((event) => {
     setSortKey(event.target.value);
@@ -1069,8 +1809,193 @@ function DashboardApp({ initial }) {
     [requestPapers],
   );
 
+  const handleJournalLimitChange = useCallback((event) => {
+    const value = Number(event.target.value);
+    if (Number.isNaN(value)) {
+      setJournalLimitInput(9);
+      return;
+    }
+    const clamped = Math.min(30, Math.max(1, Math.round(value)));
+    setJournalLimitInput(clamped);
+  }, []);
+
+  const handleJournalSortKeyChange = useCallback((event) => {
+    setJournalSortKey(event.target.value);
+  }, []);
+
+  const handleJournalSortDirChange = useCallback((event) => {
+    setJournalSortDir(event.target.value);
+  }, []);
+
+  const handleJournalRefresh = useCallback(async () => {
+    if (currentChatId == null) return;
+    if (!isAuthorized) {
+      pushToast({
+        tone: "error",
+        title: "Sesion",
+        message: "Inicia sesion para actualizar el catalogo.",
+      });
+      return;
+    }
+    const nextLimit = journalLimitInput;
+    setJournalIngesting(true);
+    try {
+      await postJSON(`/users/${currentChatId}/journals/ingest`, { limit: nextLimit });
+      setJournalLimit(nextLimit);
+      setJournalNonce((value) => value + 1);
+      pushToast({
+        tone: "success",
+        title: "Revistas",
+        message: "Catalogo actualizado desde Crossref.",
+      });
+    } catch (err) {
+      pushToast({
+        tone: "error",
+        title: "Revistas",
+        message: err.message || "No se pudo actualizar el catalogo.",
+      });
+    } finally {
+      setJournalIngesting(false);
+    }
+  }, [currentChatId, isAuthorized, journalLimitInput, pushToast]);
+
+  const handleMagicLinkRequest = useCallback(async () => {
+    const email = magicEmail.trim();
+    if (!email) {
+      pushToast({
+        tone: "error",
+        title: "Magic link",
+        message: "Ingresa un correo valido.",
+      });
+      return;
+    }
+    setMagicLinkPending(true);
+    try {
+      const res = await postJSON("/auth/magic/request", { email });
+      setMagicLinkData({
+        ...res,
+        absoluteUrl: `${globalThis.location?.origin || ""}${res.login_url || ""}`,
+      });
+      await loadUsers();
+      setMagicLinkHistory((prev) => [
+        {
+          email,
+          chat_id: res.chat_id,
+          login_url: res.login_url,
+          absoluteUrl: `${globalThis.location?.origin || ""}${res.login_url || ""}`,
+          pin: res.pin,
+          generated_at: new Date().toISOString(),
+        },
+        ...prev,
+      ]);
+      pushToast({
+        tone: "success",
+        title: "Magic link",
+        message: "Enlace generado. Copia y comparte el URL.",
+      });
+    } catch (err) {
+      pushToast({
+        tone: "error",
+        title: "Magic link",
+        message: err.message || "No se pudo generar el enlace.",
+      });
+    } finally {
+      setMagicLinkPending(false);
+    }
+  }, [magicEmail, pushToast, loadUsers]);
+
+  const handleLoginChatChange = useCallback((event) => {
+    setLoginChatIdInput(event.target.value);
+    setLoginError("");
+  }, []);
+
+  const handleLoginPinChange = useCallback((event) => {
+    setLoginPinInput(event.target.value);
+    setLoginError("");
+  }, []);
+
+  const handleLoginSubmit = useCallback(async () => {
+    const chatId = Number(loginChatIdInput);
+    if (!Number.isFinite(chatId) || chatId <= 0) {
+      setLoginError("Ingresa un chat ID valido.");
+      return;
+    }
+    const pin = loginPinInput.trim();
+    if (pin.length < 3) {
+      setLoginError("Ingresa el PIN recibido.");
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      await postJSON("/auth/pin/verify", { chat_id: chatId, pin });
+      setPinSessions((prev) => {
+        const next = { ...prev, [chatId]: true };
+        persistPinSessions(next);
+        pinSessionsRef.current = next;
+        return next;
+      });
+      setCurrentChatId(chatId);
+      setView("papers");
+      setLoginChatIdInput("");
+      setLoginPinInput("");
+      setLoginError("");
+      pushToast({
+        tone: "success",
+        title: "Sesion",
+        message: `Acceso concedido al chat ${chatId}.`,
+      });
+    } catch (err) {
+      setLoginError(err.message || "PIN incorrecto.");
+    } finally {
+      setLoginLoading(false);
+    }
+  }, [loginChatIdInput, loginPinInput, pushToast]);
+
+  const savedSessions = Object.keys(pinSessions || {}).map((id) => Number(id));
+
+  const handleSavedSessionSelect = useCallback(
+    (chatId) => {
+      if (!pinSessions[chatId]) return;
+      setCurrentChatId(chatId);
+      setView("papers");
+      pushToast({
+        tone: "info",
+        title: "Sesion",
+        message: `Sesión reanudada en chat ${chatId}.`,
+      });
+    },
+    [pinSessions, pushToast],
+  );
+
+  const handleLogoutChat = useCallback(() => {
+    if (currentChatId == null) return;
+    setPinSessions((prev) => {
+      const next = { ...prev };
+      delete next[currentChatId];
+      persistPinSessions(next);
+      pinSessionsRef.current = next;
+      return next;
+    });
+    setCurrentChatId(null);
+    setLoginChatIdInput("");
+    setLoginPinInput("");
+    pushToast({
+      tone: "info",
+      title: "Sesion",
+      message: "Cerraste la sesión actual.",
+    });
+  }, [currentChatId, pushToast]);
+
   const handleHistoryRefresh = useCallback(() => {
     if (currentChatId == null) return;
+    if (!isAuthorized) {
+      pushToast({
+        tone: "error",
+        title: "Sesion",
+        message: "Inicia sesion para refrescar el historial.",
+      });
+      return;
+    }
     pushToast({
       tone: "info",
       title: "Historial",
@@ -1078,10 +2003,18 @@ function DashboardApp({ initial }) {
     });
     requestPapers("history");
     setConfigNonce((value) => value + 1);
-  }, [currentChatId, pushToast, requestPapers]);
+  }, [currentChatId, isAuthorized, pushToast, requestPapers]);
 
   const handleLiveRefresh = useCallback(() => {
     if (currentChatId == null) return;
+    if (!isAuthorized) {
+      pushToast({
+        tone: "error",
+        title: "Sesion",
+        message: "Inicia sesion para usar actualizaciones en vivo.",
+      });
+      return;
+    }
     if (inflightToastRef.current != null) {
       dismissToast(inflightToastRef.current);
       inflightToastRef.current = null;
@@ -1095,7 +2028,7 @@ function DashboardApp({ initial }) {
     setPage(0);
     requestPapers("live");
     setConfigNonce((value) => value + 1);
-  }, [currentChatId, dismissToast, pushToast, requestPapers]);
+  }, [currentChatId, isAuthorized, dismissToast, pushToast, requestPapers]);
 
   const handlePrevPage = useCallback(() => {
     if (page === 0) return;
@@ -1116,6 +2049,7 @@ function DashboardApp({ initial }) {
     () => (Array.isArray(configState.data?.profiles) ? configState.data.profiles : []),
     [configState.data?.profiles],
   );
+  const canDeleteProfile = availableProfiles.length > 1;
 
   const handleProfileSelect = useCallback(
     async (event) => {
@@ -1299,6 +2233,316 @@ function DashboardApp({ initial }) {
     requestPapers,
   ]);
 
+  const handleProfileIngest = useCallback(async () => {
+    if (!currentChatId) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Selecciona un usuario primero.",
+      });
+      return;
+    }
+    const active = configState.data?.active_profile;
+    if (!active) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "No hay un perfil activo para actualizar.",
+      });
+      return;
+    }
+    const text = (ingestText || "").trim();
+    if (!text) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Ingresa un abstract antes de procesar.",
+      });
+      return;
+    }
+    setIngestingProfile(true);
+    const pendingToast = pushToast({
+      tone: "info",
+      title: "Perfil",
+      message: "Procesando abstract...",
+      timeout: 0,
+    });
+    try {
+      const payload = { text, profile: active };
+      const cfg = await postJSON(`/users/${currentChatId}/profiles/ingest`, payload);
+      if (pendingToast) {
+        dismissToast(pendingToast);
+      }
+      setConfigState({ data: cfg, loading: false, error: null });
+      setEditSummary(cfg.profile_summary || "");
+      setEditTopics(
+        normalizeTopicEntries(
+          Array.isArray(cfg.profile_topics) ? cfg.profile_topics : [],
+          cfg.profile_topic_weights || {},
+        ),
+      );
+      setIngestText("");
+      setPage(0);
+      requestPapers("history");
+      await loadUsers();
+      pushToast({
+        tone: "success",
+        title: "Perfil",
+        message: "Perfil actualizado con el abstract.",
+      });
+    } catch (err) {
+      if (pendingToast) {
+        dismissToast(pendingToast);
+      }
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: err.message || "No se pudo procesar el abstract.",
+      });
+    } finally {
+      setIngestingProfile(false);
+    }
+  }, [
+    configState.data?.active_profile,
+    currentChatId,
+    dismissToast,
+    ingestText,
+    loadUsers,
+    pushToast,
+    requestPapers,
+  ]);
+
+  const handlePdfUpload = useCallback(async () => {
+    if (!currentChatId) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Selecciona un usuario primero.",
+      });
+      return;
+    }
+    const active = configState.data?.active_profile;
+    if (!active) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "No hay un perfil activo para actualizar.",
+      });
+      return;
+    }
+    const input = fileInputRef.current;
+    const file = input?.files?.[0];
+    if (!file) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Selecciona un archivo PDF.",
+      });
+      return;
+    }
+    if (file.type !== "application/pdf") {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Solo se aceptan archivos PDF.",
+      });
+      return;
+    }
+    setUploadingPdf(true);
+    const pendingToast = pushToast({
+      tone: "info",
+      title: "Perfil",
+      message: "Subiendo PDF...",
+      timeout: 0,
+    });
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      if (active) {
+        form.append("profile", active);
+      }
+      const response = await fetch(`/users/${currentChatId}/profiles/upload`, {
+        method: "POST",
+        body: form,
+      });
+      if (!response.ok) {
+        let message = `Error ${response.status}`;
+        try {
+          const payload = await response.json();
+          if (payload?.detail) message = payload.detail;
+        } catch (_err) {
+          /* no-op */
+        }
+        throw new Error(message);
+      }
+      const cfg = await response.json();
+      if (pendingToast) {
+        dismissToast(pendingToast);
+      }
+      setConfigState({ data: cfg, loading: false, error: null });
+      setEditSummary(cfg.profile_summary || "");
+      setEditTopics(
+        normalizeTopicEntries(
+          Array.isArray(cfg.profile_topics) ? cfg.profile_topics : [],
+          cfg.profile_topic_weights || {},
+        ),
+      );
+      setIngestText("");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      setPage(0);
+      requestPapers("history");
+      await loadUsers();
+      pushToast({
+        tone: "success",
+        title: "Perfil",
+        message: "Perfil actualizado desde el PDF.",
+      });
+    } catch (err) {
+      if (pendingToast) {
+        dismissToast(pendingToast);
+      }
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: err.message || "No se pudo procesar el PDF.",
+      });
+    } finally {
+      setUploadingPdf(false);
+    }
+  }, [
+    configState.data?.active_profile,
+    currentChatId,
+    dismissToast,
+    fileInputRef,
+    loadUsers,
+    pushToast,
+    requestPapers,
+  ]);
+
+  const handleProfileDelete = useCallback(async () => {
+    if (!currentChatId) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Selecciona un usuario primero.",
+      });
+      return;
+    }
+    const active = configState.data?.active_profile;
+    if (!active) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "No hay un perfil activo para eliminar.",
+      });
+      return;
+    }
+    if (!globalThis.confirm(`Eliminar el perfil "${active}"?`)) {
+      return;
+    }
+    setDeletingProfile(true);
+    try {
+      const cfg = await fetchJSON(
+        `/users/${currentChatId}/profiles/${encodeURIComponent(active)}`,
+        { method: "DELETE" },
+      );
+      setConfigState({ data: cfg, loading: false, error: null });
+      setPage(0);
+      requestPapers("history");
+      await loadUsers();
+      pushToast({
+        tone: "success",
+        title: "Perfil",
+        message: "Perfil eliminado.",
+      });
+    } catch (err) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: err.message || "No se pudo eliminar el perfil.",
+      });
+    } finally {
+      setDeletingProfile(false);
+    }
+  }, [
+    configState.data?.active_profile,
+    currentChatId,
+    loadUsers,
+    pushToast,
+    requestPapers,
+  ]);
+
+  const handleCreateProfile = useCallback(async () => {
+    if (!currentChatId) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Selecciona un usuario primero.",
+      });
+      return;
+    }
+    const name = (newProfileName || "").trim();
+    const text = (newProfileText || "").trim();
+    if (!name) {
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: "Ingresa un nombre para el nuevo perfil.",
+      });
+      return;
+    }
+    setCreatingProfile(true);
+    const pendingToast = pushToast({
+      tone: "info",
+      title: "Perfil",
+      message: "Creando perfil...",
+      timeout: 0,
+    });
+    try {
+      const cfg = await postJSON(`/users/${currentChatId}/profiles`, {
+        name,
+        text,
+        set_active: true,
+      });
+      if (pendingToast) {
+        dismissToast(pendingToast);
+      }
+      setConfigState({ data: cfg, loading: false, error: null });
+      setNewProfileName("");
+      setNewProfileText("");
+      setIngestText("");
+      setPage(0);
+      requestPapers("history");
+      await loadUsers();
+      pushToast({
+        tone: "success",
+        title: "Perfil",
+        message: `Perfil "${cfg.active_profile}" creado y activado.`,
+      });
+    } catch (err) {
+      if (pendingToast) {
+        dismissToast(pendingToast);
+      }
+      pushToast({
+        tone: "error",
+        title: "Perfil",
+        message: err.message || "No se pudo crear el perfil.",
+      });
+    } finally {
+      setCreatingProfile(false);
+    }
+  }, [
+    currentChatId,
+    dismissToast,
+    loadUsers,
+    newProfileName,
+    newProfileText,
+    pushToast,
+    requestPapers,
+  ]);
+
   return html`
     <div className="app-shell">
       <${Sidebar}
@@ -1310,13 +2554,23 @@ function DashboardApp({ initial }) {
         profiles=${availableProfiles}
         profilesLoading=${configState.loading || profilePending}
         view=${view}
-        onChatChange=${handleChatChange}
         onProfileChange=${handleProfileSelect}
         onViewChange=${setView}
+        isAuthorized=${isAuthorized}
+        loginChatId=${loginChatIdInput}
+        onLoginChatChange=${handleLoginChatChange}
+        loginPin=${loginPinInput}
+        onLoginPinChange=${handleLoginPinChange}
+        onLoginSubmit=${handleLoginSubmit}
+        loginError=${loginError}
+        loginLoading=${loginLoading}
+        savedSessions=${savedSessions}
+        onSavedSessionSelect=${handleSavedSessionSelect}
+        onLogoutChat=${handleLogoutChat}
       />
       <main className="content">
         <${PapersView}
-          chatId=${currentChatId}
+          chatId=${effectiveChatId}
           page=${page}
           limit=${limit}
           sortKey=${sortKey}
@@ -1331,6 +2585,20 @@ function DashboardApp({ initial }) {
           onPrev=${handlePrevPage}
           onNext=${handleNextPage}
         />
+        <${JournalsView}
+          chatId=${effectiveChatId}
+          view=${view}
+          state=${journalsState}
+          limit=${journalLimit}
+          limitInput=${journalLimitInput}
+          sortKey=${journalSortKey}
+          sortDir=${journalSortDir}
+          onSortKeyChange=${handleJournalSortKeyChange}
+          onSortDirChange=${handleJournalSortDirChange}
+          onLimitInputChange=${handleJournalLimitChange}
+          onRefresh=${handleJournalRefresh}
+          ingesting=${journalIngesting}
+        />
         <${ConfigView}
           state=${configState}
           view=${view}
@@ -1344,6 +2612,29 @@ function DashboardApp({ initial }) {
           onTopicRemove=${handleTopicRemove}
           onSave=${handleProfileUpdate}
           saving=${profilePending}
+          ingestText=${ingestText}
+          onIngestTextChange=${(event) => setIngestText(event.target.value)}
+          onIngestSubmit=${handleProfileIngest}
+          ingestingText=${ingestingProfile}
+          pdfInputRef=${fileInputRef}
+          onPdfUpload=${handlePdfUpload}
+          uploadingPdf=${uploadingPdf}
+          onDeleteProfile=${handleProfileDelete}
+          deletingProfile=${deletingProfile}
+          canDeleteProfile=${canDeleteProfile}
+          newProfileName=${newProfileName}
+          onNewProfileNameChange=${(event) => setNewProfileName(event.target.value)}
+          newProfileText=${newProfileText}
+          onNewProfileTextChange=${(event) => setNewProfileText(event.target.value)}
+          onCreateProfile=${handleCreateProfile}
+          creatingProfile=${creatingProfile}
+          magicEmail=${magicEmail}
+          onMagicEmailChange=${(event) => setMagicEmail(event.target.value)}
+          magicLinkData=${magicLinkData}
+          magicLinkLoading=${magicLinkPending}
+          onMagicLinkRequest=${handleMagicLinkRequest}
+          chatId=${effectiveChatId}
+          magicLinkHistory=${magicLinkHistory}
         />
       </main>
       <${ToastHost} toasts=${toasts} onDismiss=${dismissToast} />
