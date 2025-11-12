@@ -1,4 +1,14 @@
 import json, logging, os, shutil
+import json
+import logging
+import os
+import shutil
+import uuid
+import json
+import logging
+import os
+import random
+import shutil
 from collections import deque
 from paperradar.config import (
     DEFAULT_SIM_THRESHOLD, DEFAULT_TOP_N,
@@ -6,10 +16,33 @@ from paperradar.config import (
     DEFAULT_LLM_THRESHOLD, DEFAULT_LLM_MAX_PER_TICK, DEFAULT_LLM_ONDEMAND_MAX_PER_HOUR,
     OPENAI_API_KEY
 )
-from .paths import user_path, user_dir
+from .paths import user_path, user_dir, KNOWN_CHATS_PATH
+from paperradar.storage.list_users import list_all_user_ids
 
 USERS = {}
 _USER_MTIMES = {}
+
+def _random_passcode() -> str:
+    return f"{random.randint(0, 999999):06d}"
+
+def _register_chat_id(chat_id: int) -> None:
+    try:
+        data = json.load(open(KNOWN_CHATS_PATH, "r", encoding="utf-8"))
+    except Exception:
+        data = []
+    if chat_id not in data:
+        data.append(chat_id)
+        json.dump(sorted(data), open(KNOWN_CHATS_PATH, "w", encoding="utf-8"))
+
+
+def _allocate_chat_id() -> int:
+    existing = set(list_all_user_ids())
+    for _ in range(1000):
+        candidate = random.randint(10_000_000, 99_999_999)
+        if candidate not in existing:
+            return candidate
+    raise RuntimeError("No se pudo asignar un chat_id.")
+
 
 def default_user_state(chat_id:int)->dict:
     return {
@@ -30,11 +63,18 @@ def default_user_state(chat_id:int)->dict:
         "profile_summary": "",
         "profile_topics": [],
         "profile_topic_weights": {},
+        "web_passcode": "",
     }
 
 def _sync_active_profile_text(u:dict):
     act = u.get("active_profile","default")
     u["profile"] = u.get("profiles",{}).get(act, "")
+
+def _ensure_passcode(u: dict, persist: bool = False, chat_id: int | None = None) -> None:
+    if not u.get("web_passcode"):
+        u["web_passcode"] = _random_passcode()
+        if persist and chat_id is not None:
+            save_user(chat_id)
 
 def load_user(chat_id:int)->dict:
     meta_path = user_path(chat_id, "meta.json")
@@ -87,6 +127,7 @@ def load_user(chat_id:int)->dict:
             logging.warning(f"[user] load sent_ids {chat_id} failed: {ex}")
 
     _sync_active_profile_text(state)
+    _ensure_passcode(state)
     if mtime is None:
         try:
             mtime = os.path.getmtime(meta_path)
@@ -113,6 +154,7 @@ def get_user(chat_id:int)->dict:
         should_reload = True
     if should_reload:
         USERS[chat_id] = load_user(chat_id)
+    USERS[chat_id]["chat_id"] = chat_id
     return USERS[chat_id]
 
 def save_user(chat_id:int):
@@ -151,6 +193,7 @@ def save_user(chat_id:int):
         "profile_topic_weights": u.get("profile_topic_weights", {}),
         # NEW: guardar enviados por perfil dentro de meta.json
         "sent_ids_by_profile": sidp_serializable,
+        "web_passcode": u.get("web_passcode", ""),
     }
 
     # Guardar meta.json
@@ -166,6 +209,33 @@ def save_user(chat_id:int):
     with open(user_path(chat_id,"sent_ids.json"),"w",encoding="utf-8") as f:
         json.dump(sorted(list(u.get("sent_ids", set()))), f, ensure_ascii=False)
 
+def get_web_passcode(chat_id: int) -> str:
+    state = get_user(chat_id)
+    code = state.get("web_passcode")
+    if not code:
+        code = _random_passcode()
+        state["web_passcode"] = code
+        save_user(chat_id)
+    return code
+
+def set_web_passcode(chat_id: int, passcode: str) -> str:
+    state = get_user(chat_id)
+    state["web_passcode"] = passcode or _random_passcode()
+    save_user(chat_id)
+    return state["web_passcode"]
+
+def create_user(initial_profile_text: str = "", chat_id: int | None = None) -> int:
+    cid = chat_id or _allocate_chat_id()
+    user_dir(cid)
+    state = default_user_state(cid)
+    state["profiles"]["default"] = initial_profile_text
+    state["profile"] = initial_profile_text
+    state["web_passcode"] = _random_passcode()
+    USERS[cid] = state
+    save_user(cid)
+    _register_chat_id(cid)
+    return cid
+
 def forgetme(chat_id:int):
     try:
         shutil.rmtree(user_dir(chat_id))
@@ -173,6 +243,13 @@ def forgetme(chat_id:int):
         pass
     USERS.pop(chat_id, None)
     _USER_MTIMES.pop(chat_id, None)
+    try:
+        data = json.load(open(KNOWN_CHATS_PATH,"r",encoding="utf-8"))
+    except Exception:
+        data = []
+    if chat_id in data:
+        data = [cid for cid in data if cid != chat_id]
+        json.dump(data, open(KNOWN_CHATS_PATH,"w",encoding="utf-8"))
 
 # --- Helpers para manejar sent_ids por perfil activo ----------------------------
 

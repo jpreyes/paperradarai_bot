@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
+import logging
 import os
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, Body
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,13 +15,20 @@ import tempfile
 from paperradar.config import POLL_DAILY_TIME
 from paperradar.services.pipeline import build_ranked, make_bullets
 from paperradar.services.profile_builder import build_profile_from_pdf, analyze_text
+from paperradar.services.journal_search import recommend_journals_for_user
+from paperradar.services.journal_ingest import refresh_journals_from_crossref
+from paperradar.services.paper_embeddings import ensure_paper_embeddings
 from paperradar.fetchers.search_terms import set_custom_terms
 from paperradar.storage.history import load_history, upsert_history_record, user_history_json, user_history_csv, now_iso
 from paperradar.storage.list_users import list_all_user_ids
+from paperradar.storage import journals as journal_store
+from paperradar.storage import email_index, magic_links, journal_analysis
 from paperradar.storage.users import (
     get_user,
     save_user,
     clear_sent_ids_for_active_profile,
+    create_user,
+    get_web_passcode,
 )
 from paperradar.bot.commands_profiles import _apply_profile_analysis
 
@@ -39,7 +47,9 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 def _ensure_user(chat_id: int):
     if chat_id not in list_all_user_ids():
         raise HTTPException(status_code=404, detail=f"chat_id {chat_id} not found")
-    return get_user(chat_id)
+    state = get_user(chat_id)
+    state["chat_id"] = chat_id
+    return state
 
 
 def _history_records(chat_id: int, profile: str | None) -> List[dict]:
@@ -130,6 +140,7 @@ def _build_papers_payload(chat_id: int, limit: int, offset: int, *, use_live: bo
     llm_budget = int(user_state.get("llm_max_per_tick", 2) or 0)
     used_llm = 0
     items: List[dict] = []
+    embed_candidates: List[dict] = []
     known_keys = set(history_map.keys())
     for it, score in ranked:
         pk = (it.get("id") or it.get("url") or "")[:200]
@@ -162,6 +173,12 @@ def _build_papers_payload(chat_id: int, limit: int, offset: int, *, use_live: bo
                 "disliked": _is_disliked(user_state, pk),
             }
         )
+        embed_candidates.append(it)
+    if embed_candidates:
+        try:
+            ensure_paper_embeddings(embed_candidates)
+        except Exception as exc:
+            logging.warning("[papers] embedding preload failed: %s", exc)
     return {
         "chat_id": chat_id,
         "limit": limit,
@@ -186,19 +203,6 @@ def dashboard(request: Request):
     }
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "initial_data": initial},
-    )
-
-
-@app.get("/profiles", response_class=HTMLResponse)
-def profiles_page(request: Request):
-    chat_ids = list_all_user_ids()
-    initial = {
-        "chatIds": chat_ids,
-        "defaultChatId": chat_ids[0] if chat_ids else None,
-    }
-    return templates.TemplateResponse(
-        "profiles.html",
         {"request": request, "initial_data": initial},
     )
 
@@ -250,6 +254,56 @@ def user_config(chat_id: int):
     }
 
 
+@app.post("/auth/magic/request")
+def auth_magic_request(payload: MagicLinkRequestPayload = Body(...)):
+    email = email_index.normalize_email(payload.email)
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Email invalido.")
+    chat_id = email_index.get_chat_id(email)
+    if chat_id is None:
+        chat_id = create_user()
+        email_index.set_chat_id(email, chat_id)
+    pin = get_web_passcode(chat_id)
+    token_payload = magic_links.create_token(email, chat_id)
+    login_path = f"/auth/magic/consume?token={token_payload['token']}"
+    return {
+        "chat_id": chat_id,
+        "token": token_payload["token"],
+        "login_url": login_path,
+        "expires_at": token_payload["expires_at"],
+        "pin": pin,
+    }
+
+
+@app.get("/auth/magic/consume", response_class=HTMLResponse)
+def auth_magic_consume(request: Request, token: str):
+    payload = magic_links.consume_token(token)
+    if not payload:
+        return templates.TemplateResponse(
+            "magic_login.html",
+            {"request": request, "error": "Token invalido o expirado."},
+        )
+    return templates.TemplateResponse(
+        "magic_login.html",
+        {
+            "request": request,
+            "chat_id": payload.get("chat_id"),
+            "email": payload.get("email"),
+        },
+    )
+
+
+@app.post("/auth/pin/verify")
+def auth_pin_verify(payload: PinVerifyPayload):
+    chat_id = payload.chat_id
+    user_state = _ensure_user(chat_id)
+    expected = user_state.get("web_passcode") or get_web_passcode(chat_id)
+    provided = (payload.pin or "").strip()
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="PIN incorrecto.")
+    return {"chat_id": chat_id, "status": "ok"}
+
+
 class ProfileCreatePayload(BaseModel):
     name: str
     text: str | None = None
@@ -264,6 +318,47 @@ class ProfileUpdatePayload(BaseModel):
     summary: str | None = None
     topics: List[str] | None = None
     topic_weights: Dict[str, float] | None = None
+
+
+class ProfileIngestPayload(BaseModel):
+    profile: str | None = None
+    text: str
+
+
+class JournalEntryPayload(BaseModel):
+    id: str | None = None
+    title: str
+    aims_scope: str | None = None
+    publisher: str | None = None
+    website: str | None = None
+    country: str | None = None
+    languages: List[str] | None = None
+    categories: List[str] | None = None
+    topics: List[str] | None = None
+    keywords: List[str] | None = None
+    metrics: Dict[str, float] | None = None
+    speed: Dict[str, float] | None = None
+    open_access: bool | None = None
+    apc_usd: float | None = None
+    issn_print: str | None = None
+    issn_electronic: str | None = None
+
+
+class JournalCatalogPayload(BaseModel):
+    items: List[JournalEntryPayload]
+
+
+class JournalIngestPayload(BaseModel):
+    limit: int | None = None
+
+
+class MagicLinkRequestPayload(BaseModel):
+    email: str
+
+
+class PinVerifyPayload(BaseModel):
+    chat_id: int
+    pin: str
 
 
 @app.post("/users/{chat_id}/profiles")
@@ -315,7 +410,6 @@ def profile_use(chat_id: int, payload: ProfileSwitchPayload):
     applied = _apply_profile_analysis(user_state, stored, summary_override=stored)
     profiles[name] = applied
     user_state["profile"] = applied
-    set_custom_terms(user_state.get("profile_topics", []))
     clear_sent_ids_for_active_profile(user_state)
     set_custom_terms(user_state.get("profile_topics", []))
     save_user(chat_id)
@@ -428,6 +522,27 @@ def profile_delete(chat_id: int, profile_name: str):
     return user_config(chat_id)
 
 
+@app.post("/users/{chat_id}/profiles/ingest")
+def profile_ingest_text(chat_id: int, payload: ProfileIngestPayload):
+    user_state = _ensure_user(chat_id)
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="El abstract es obligatorio.")
+    target = (payload.profile or user_state.get("active_profile") or "default").strip() or "default"
+    profiles = user_state.setdefault("profiles", {})
+    if target not in profiles:
+        profiles[target] = ""
+    user_state["active_profile"] = target
+    user_state.setdefault("profile_overrides", {}).pop(target, None)
+    applied = _apply_profile_analysis(user_state, text, summary_override=text)
+    profiles[target] = applied
+    user_state["profile"] = applied
+    clear_sent_ids_for_active_profile(user_state)
+    set_custom_terms(user_state.get("profile_topics", []))
+    save_user(chat_id)
+    return user_config(chat_id)
+
+
 class FeedbackPayload(BaseModel):
     paper_id: str
     action: str
@@ -534,6 +649,61 @@ async def profile_upload_pdf(
     save_user(chat_id)
 
     return user_config(chat_id)
+
+
+@app.get("/users/{chat_id}/journals")
+def user_journals(
+    chat_id: int,
+    limit: int = Query(9, ge=1, le=30),
+    llm_top: int | None = Query(None, ge=1, le=30),
+):
+    user_state = _ensure_user(chat_id)
+    payload = recommend_journals_for_user(user_state, limit=limit, llm_limit=llm_top)
+    payload["chat_id"] = chat_id
+    return payload
+
+
+@app.post("/users/{chat_id}/journals/ingest")
+def user_journals_ingest(chat_id: int, payload: JournalIngestPayload | None = None):
+    user_state = _ensure_user(chat_id)
+    limit = 25
+    if payload and payload.limit:
+        limit = max(5, min(60, int(payload.limit)))
+    try:
+        result = refresh_journals_from_crossref(user_state, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    dedupe_stats = journal_store.dedupe_catalog()
+    journal_analysis.clear_for_chat(chat_id)
+    result["dedupe"] = dedupe_stats
+    result["chat_id"] = chat_id
+    return result
+
+
+@app.get("/journals/catalog")
+def journals_catalog():
+    items = journal_store.load_catalog()
+    return {"count": len(items), "items": items}
+
+
+@app.post("/journals/catalog")
+def journals_catalog_upsert(payload: JournalCatalogPayload):
+    entries = [item.dict(exclude_none=True) for item in payload.items]
+    catalog, updated = journal_store.upsert_entries(entries)
+    return {"count": len(catalog), "updated": updated, "items": catalog}
+
+
+@app.delete("/journals/catalog/{journal_id}")
+def journals_catalog_delete(journal_id: str):
+    if not journal_store.delete_entry(journal_id):
+        raise HTTPException(status_code=404, detail="Journal no encontrado")
+    return {"deleted": journal_id}
+
+
+@app.post("/journals/catalog/dedupe")
+def journals_catalog_dedupe():
+    stats = journal_store.dedupe_catalog()
+    return {"status": "ok", "removed": stats["removed"], "total": stats["total"]}
 
 
 @app.get("/users/{chat_id}/papers")

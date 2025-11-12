@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>PaperRadar · Magic Link</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      .card {
+        background: rgba(15, 23, 42, 0.9);
+        padding: 32px;
+        border-radius: 18px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        max-width: 420px;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      {% if chat_id %}
+      <h1>Bienvenido</h1>
+      <p>Tu acceso se vinculó correctamente.</p>
+      <p>Redirigiendo al panel...</p>
+      <script>
+        (function () {
+          var chatId = "{{ chat_id }}";
+          if (chatId) {
+            try {
+              localStorage.setItem("paperradarChatId", chatId);
+            } catch (err) {
+              console.warn("No se pudo guardar el chatId", err);
+            }
+          }
+          window.location.href = "/";
+        })();
+      </script>
+      {% else %}
+      <h1>Link no válido</h1>
+      <p>{{ error or "El enlace expiro o ya fue utilizado." }}</p>
+      <p><a href="/" style="color:#93c5fd">Volver al inicio</a></p>
+      {% endif %}
+    </div>
+  </body>
+</html>
