@@ -1312,8 +1312,22 @@ function Sidebar({
         </div>
       </header>
       <section className="menu">
-        <div className="menu-label">Usuario</div>
-        <div className="menu-value">${userLabel}</div>
+        <label className="menu-label" htmlFor="chatSelect">Selecciona usuario</label>
+        <select
+          id="chatSelect"
+          className="menu-select"
+          value=${currentChatId ?? ""}
+          onChange=${onChatChange}
+          disabled=${!hasUsers || loading}
+        >
+          ${hasUsers
+            ? users.map(
+                (user) => html`<option key=${user.chat_id} value=${user.chat_id}>
+                  Chat ${user.chat_id}
+                </option>`,
+              )
+            : html`<option value="">Sin usuarios</option>`}
+        </select>
         ${loading
           ? html`<div className="menu-status">
               <${Spinner} size=${16} />
