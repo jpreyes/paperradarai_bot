@@ -255,7 +255,11 @@ def user_config(chat_id: int):
 
 
 @app.post("/auth/magic/request")
-def auth_magic_request(payload: MagicLinkRequestPayload = Body(...)):
+def auth_magic_request(raw: dict = Body(...)):
+    try:
+        payload = MagicLinkRequestPayload(**raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
     email = email_index.normalize_email(payload.email)
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Email invalido.")
@@ -364,6 +368,8 @@ class PinVerifyPayload(BaseModel):
     chat_id: int
     pin: str
 
+MagicLinkRequestPayload.model_rebuild()
+MagicLinkRequestPayload.model_rebuild()
 PinVerifyPayload.model_rebuild()
 
 

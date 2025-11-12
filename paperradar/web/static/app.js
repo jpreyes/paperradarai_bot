@@ -870,41 +870,6 @@ function JournalsView({
   `;
 }
 
-function PinModal({ state, onPinChange, onSubmit, onClose }) {
-  if (!state.visible) return null;
-  return html`
-    <div className="pin-modal">
-      <div className="pin-modal__content">
-        <h3>Ingresa el PIN</h3>
-        <p>
-          Este acceso corresponde al chat ${state.chatId ?? "--"}. Introduce el PIN compartido al
-          generar el magic link.
-        </p>
-        <input
-          type="password"
-          placeholder="000000"
-          value=${state.pin}
-          onChange=${(event) => onPinChange(event.target.value)}
-        />
-        ${state.error ? html`<p className="pin-modal__error">${state.error}</p>` : null}
-        <div className="pin-modal__actions">
-          <button type="button" className="toolbar-btn" onClick=${onClose} disabled=${state.loading}>
-            Cancelar
-          </button>
-          <button
-            type="button"
-            className="toolbar-btn primary"
-            onClick=${onSubmit}
-            disabled=${state.loading || !state.pin.trim()}
-          >
-            ${state.loading ? "Verificando..." : "Continuar"}
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
 function ConfigView({
   chatId,
   state,
@@ -940,6 +905,7 @@ function ConfigView({
   magicLinkData,
   magicLinkLoading,
   onMagicLinkRequest,
+  magicLinkHistory,
 }) {
   const cfg = state.data;
   const topics = cfg?.profile_topics || [];
@@ -1272,6 +1238,23 @@ function ConfigView({
                     </div>`
                   : null}
               </article>
+              ${magicLinkHistory && magicLinkHistory.length
+                ? html`<article className="card magic-link-card">
+                    <h2>Links generados</h2>
+                    <div className="magic-history">
+                      ${magicLinkHistory.map(
+                        (entry, index) => html`<div key=${`${entry.email}-${index}`} className="magic-history__item">
+                          <p><strong>Correo:</strong> ${entry.email}</p>
+                          <p><strong>Chat ID:</strong> ${entry.chat_id}</p>
+                          <p><strong>PIN:</strong> ${entry.pin || "------"}</p>
+                          <p><strong>Link:</strong></p>
+                          <code>${entry.absoluteUrl || entry.login_url || ""}</code>
+                          <p className="hint">${formatDate(entry.generated_at)}</p>
+                        </div>`,
+                      )}
+                    </div>
+                  </article>`
+                : null}
             `
           : null}
       </div>
@@ -1288,9 +1271,18 @@ function Sidebar({
   profiles,
   profilesLoading,
   view,
-  onChatChange,
   onProfileChange,
   onViewChange,
+  isAuthorized,
+  loginChatId,
+  onLoginChatChange,
+  loginPin,
+  onLoginPinChange,
+  onLoginSubmit,
+  loginError,
+  loginLoading,
+  savedSessions,
+  onSavedSessionSelect,
   onLogoutChat,
 }) {
   const hasUsers = users.length > 0;
@@ -1312,75 +1304,109 @@ function Sidebar({
         </div>
       </header>
       <section className="menu">
-        <label className="menu-label" htmlFor="chatSelect">Selecciona usuario</label>
-        <select
-          id="chatSelect"
-          className="menu-select"
-          value=${currentChatId ?? ""}
-          onChange=${onChatChange}
-          disabled=${!hasUsers || loading}
-        >
-          ${hasUsers
-            ? users.map(
-                (user) => html`<option key=${user.chat_id} value=${user.chat_id}>
-                  Chat ${user.chat_id}
-                </option>`,
-              )
-            : html`<option value="">Sin usuarios</option>`}
-        </select>
+        ${!isAuthorized
+          ? html`
+              <div className="login-card">
+                <label className="menu-label" htmlFor="loginChat">Chat ID</label>
+                <input
+                  id="loginChat"
+                  className="menu-select"
+                  type="number"
+                  min="1"
+                  placeholder="Ej. 8455728091"
+                  value=${loginChatId}
+                  onChange=${onLoginChatChange}
+                />
+                <label className="menu-label" htmlFor="loginPin">PIN</label>
+                <input
+                  id="loginPin"
+                  className="menu-select"
+                  type="password"
+                  placeholder="PIN"
+                  value=${loginPin}
+                  onChange=${onLoginPinChange}
+                />
+                ${loginError ? html`<div className="menu-error">${loginError}</div>` : null}
+                <button
+                  type="button"
+                  className="toolbar-btn primary"
+                  onClick=${onLoginSubmit}
+                  disabled=${loginLoading}
+                >
+                  ${loginLoading ? "Ingresando..." : "Iniciar sesion"}
+                </button>
+                ${savedSessions.length
+                  ? html`<div className="session-list">
+                      <p className="hint">Sesiones recordadas:</p>
+                      ${savedSessions.map(
+                        (chatId) => html`<button
+                          type="button"
+                          className="toolbar-btn"
+                          onClick=${() => onSavedSessionSelect(chatId)}
+                        >
+                          Chat ${chatId}
+                        </button>`,
+                      )}
+                    </div>`
+                  : null}
+              </div>
+            `
+          : html`
+              <div className="menu-value">${userLabel}</div>
+              <label className="menu-label" htmlFor="profileSelect">
+                Perfil activo
+              </label>
+              <select
+                id="profileSelect"
+                className="menu-select"
+                value=${activeProfile ?? ""}
+                onChange=${onProfileChange}
+                disabled=${!hasProfiles || profilesLoading}
+              >
+                ${profilesLoading
+                  ? html`<option value="">Cargando perfiles...</option>`
+                  : hasProfiles
+                  ? profiles.map((name) => html`<option key=${name} value=${name}>${name}</option>`)
+                  : html`<option value="">Sin perfiles disponibles</option>`}
+              </select>
+              <nav className="menu-nav">
+                <button
+                  type="button"
+                  className=${`nav-btn${view === "papers" ? " active" : ""}`}
+                  onClick=${() => onViewChange("papers")}
+                >
+                  Papers
+                </button>
+                <button
+                  type="button"
+                  className=${`nav-btn${view === "journals" ? " active" : ""}`}
+                  onClick=${() => onViewChange("journals")}
+                >
+                  Revistas
+                </button>
+                <button
+                  type="button"
+                  className=${`nav-btn${view === "config" ? " active" : ""}`}
+                  onClick=${() => onViewChange("config")}
+                >
+                  Configuracion
+                </button>
+              </nav>
+              <button type="button" className="toolbar-btn danger" onClick=${onLogoutChat}>
+                Cerrar sesion
+              </button>
+            `}
         ${loading
           ? html`<div className="menu-status">
               <${Spinner} size=${16} />
               <span>Cargando usuarios...</span>
             </div>`
           : null}
-        <label className="menu-label" htmlFor="profileSelect">
-          Perfil activo
-        </label>
-        <select
-          id="profileSelect"
-          className="menu-select"
-          value=${activeProfile ?? ""}
-          onChange=${onProfileChange}
-          disabled=${!hasProfiles || profilesLoading}
-        >
-          ${profilesLoading
-            ? html`<option value="">Cargando perfiles...</option>`
-            : hasProfiles
-            ? profiles.map((name) => html`<option key=${name} value=${name}>${name}</option>`)
-            : html`<option value="">Sin perfiles disponibles</option>`}
-        </select>
-        <nav className="menu-nav">
-          <button
-            type="button"
-            className=${`nav-btn${view === "papers" ? " active" : ""}`}
-            onClick=${() => onViewChange("papers")}
-          >
-            Papers
-          </button>
-          <button
-            type="button"
-            className=${`nav-btn${view === "journals" ? " active" : ""}`}
-            onClick=${() => onViewChange("journals")}
-          >
-            Revistas
-          </button>
-          <button
-            type="button"
-            className=${`nav-btn${view === "config" ? " active" : ""}`}
-            onClick=${() => onViewChange("config")}
-          >
-            Configuracion
-          </button>
-        </nav>
         ${error ? html`<div className="menu-error">${error}</div>` : null}
       </section>
       <footer className="menu-footer">
         <p>Datos compartidos con el bot.</p>
         <p className="hint">Los terminos de busqueda siguen al perfil activo.</p>
-        <button type="button" className="toolbar-btn" onClick=${onLogoutChat}>
-          Cerrar sesi&oacute;n local
-        </button>
       </footer>
     </aside>
   `;
@@ -1390,17 +1416,24 @@ function DashboardApp({ initial }) {
   const [users, setUsers] = useState([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState(null);
+  const pinSessionsRef = useRef(loadPinSessions());
+  const [pinSessions, setPinSessions] = useState(pinSessionsRef.current);
   const [currentChatId, setCurrentChatId] = useState(() => {
+    let stored = null;
     try {
-      const stored = globalThis.localStorage?.getItem("paperradarChatId");
-      const parsed = Number(stored);
+      const raw = globalThis.localStorage?.getItem("paperradarChatId");
+      const parsed = Number(raw);
       if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed;
+        stored = parsed;
       }
     } catch (_err) {
       /* ignore */
     }
-    return initial.defaultChatId ?? null;
+    if (stored && pinSessionsRef.current[stored]) {
+      return stored;
+    }
+    const first = Object.keys(pinSessionsRef.current)[0];
+    return first ? Number(first) : null;
   });
   const [view, setView] = useState("papers");
   const [sortKey, setSortKey] = useState("score");
@@ -1427,20 +1460,17 @@ function DashboardApp({ initial }) {
   const [journalLimitInput, setJournalLimitInput] = useState(9);
   const [journalNonce, setJournalNonce] = useState(0);
   const [journalIngesting, setJournalIngesting] = useState(false);
-  const [journalSortKey, setJournalSortKey] = useState("score");
+  const [journalSortKey, setJournalSortKey] = useState("fit_score");
   const [journalSortDir, setJournalSortDir] = useState("desc");
   const [magicEmail, setMagicEmail] = useState("");
   const [magicLinkData, setMagicLinkData] = useState(null);
   const [magicLinkPending, setMagicLinkPending] = useState(false);
-  const [pinSessions, setPinSessions] = useState(() => loadPinSessions());
-  const [pinModal, setPinModal] = useState({
-    visible: false,
-    chatId: null,
-    pin: "",
-    error: "",
-    loading: false,
-  });
-  const isAuthorized = currentChatId != null && Boolean(pinSessions[currentChatId]);
+  const [magicLinkHistory, setMagicLinkHistory] = useState([]);
+  const [loginChatIdInput, setLoginChatIdInput] = useState("");
+  const [loginPinInput, setLoginPinInput] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const isAuthorized = currentChatId != null;
   const effectiveChatId = isAuthorized ? currentChatId : null;
   const [configNonce, setConfigNonce] = useState(0);
   const { toasts, pushToast, dismissToast } = useToasts({ autoDismiss: 6000 });
@@ -1524,25 +1554,6 @@ function DashboardApp({ initial }) {
       /* ignore */
     }
   }, [currentChatId]);
-
-  useEffect(() => {
-    if (currentChatId == null) {
-      setPinModal((prev) =>
-        prev.visible ? { ...prev, visible: false, chatId: null, pin: "", error: "" } : prev,
-      );
-      return;
-    }
-    if (!pinSessions[currentChatId]) {
-      setPinModal((prev) => ({
-        ...prev,
-        visible: true,
-        chatId: currentChatId,
-        pin: "",
-        error: "",
-        loading: false,
-      }));
-    }
-  }, [currentChatId, pinSessions]);
 
   useEffect(() => {
     if (!isAuthorized) {
@@ -1780,15 +1791,6 @@ function DashboardApp({ initial }) {
     return () => controller.abort();
   }, [currentChatId, isAuthorized, limit, page, papersRequest, requestPapers, dismissToast, pushToast]);
 
-  const handleChatChange = useCallback((event) => {
-    const value = Number(event.target.value);
-    if (!Number.isFinite(value)) {
-      setCurrentChatId(null);
-      return;
-    }
-    setCurrentChatId(value);
-  }, []);
-
   const handleSortKeyChange = useCallback((event) => {
     setSortKey(event.target.value);
   }, []);
@@ -1828,12 +1830,10 @@ function DashboardApp({ initial }) {
   const handleJournalRefresh = useCallback(async () => {
     if (currentChatId == null) return;
     if (!isAuthorized) {
-      setPinModal({
-        visible: true,
-        chatId: currentChatId,
-        pin: "",
-        error: "",
-        loading: false,
+      pushToast({
+        tone: "error",
+        title: "Sesion",
+        message: "Inicia sesion para actualizar el catalogo.",
       });
       return;
     }
@@ -1877,9 +1877,17 @@ function DashboardApp({ initial }) {
         absoluteUrl: `${globalThis.location?.origin || ""}${res.login_url || ""}`,
       });
       await loadUsers();
-      if (res.chat_id != null) {
-        setCurrentChatId(res.chat_id);
-      }
+      setMagicLinkHistory((prev) => [
+        {
+          email,
+          chat_id: res.chat_id,
+          login_url: res.login_url,
+          absoluteUrl: `${globalThis.location?.origin || ""}${res.login_url || ""}`,
+          pin: res.pin,
+          generated_at: new Date().toISOString(),
+        },
+        ...prev,
+      ]);
       pushToast({
         tone: "success",
         title: "Magic link",
@@ -1896,61 +1904,95 @@ function DashboardApp({ initial }) {
     }
   }, [magicEmail, pushToast, loadUsers]);
 
-  const handlePinModalClose = useCallback(() => {
-    setPinModal((prev) => ({ ...prev, visible: false, chatId: null, pin: "", error: "", loading: false }));
+  const handleLoginChatChange = useCallback((event) => {
+    setLoginChatIdInput(event.target.value);
+    setLoginError("");
   }, []);
 
-  const handlePinChange = useCallback((value) => {
-    setPinModal((prev) => ({ ...prev, pin: value, error: "" }));
+  const handleLoginPinChange = useCallback((event) => {
+    setLoginPinInput(event.target.value);
+    setLoginError("");
   }, []);
 
-  const handlePinSubmit = useCallback(async () => {
-    if (!pinModal.chatId) return;
-    setPinModal((prev) => ({ ...prev, loading: true, error: "" }));
+  const handleLoginSubmit = useCallback(async () => {
+    const chatId = Number(loginChatIdInput);
+    if (!Number.isFinite(chatId) || chatId <= 0) {
+      setLoginError("Ingresa un chat ID valido.");
+      return;
+    }
+    const pin = loginPinInput.trim();
+    if (pin.length < 3) {
+      setLoginError("Ingresa el PIN recibido.");
+      return;
+    }
+    setLoginLoading(true);
     try {
-      await postJSON("/auth/pin/verify", { chat_id: pinModal.chatId, pin: pinModal.pin });
+      await postJSON("/auth/pin/verify", { chat_id: chatId, pin });
       setPinSessions((prev) => {
-        const next = { ...prev, [pinModal.chatId]: true };
+        const next = { ...prev, [chatId]: true };
         persistPinSessions(next);
+        pinSessionsRef.current = next;
         return next;
       });
-      setPinModal({ visible: false, chatId: null, pin: "", error: "", loading: false });
+      setCurrentChatId(chatId);
+      setView("papers");
+      setLoginChatIdInput("");
+      setLoginPinInput("");
+      setLoginError("");
       pushToast({
         tone: "success",
-        title: "PIN",
-        message: "Acceso confirmado.",
+        title: "Sesion",
+        message: `Acceso concedido al chat ${chatId}.`,
       });
     } catch (err) {
-      setPinModal((prev) => ({ ...prev, error: err.message || "PIN incorrecto", loading: false }));
+      setLoginError(err.message || "PIN incorrecto.");
+    } finally {
+      setLoginLoading(false);
     }
-  }, [pinModal, pushToast]);
+  }, [loginChatIdInput, loginPinInput, pushToast]);
 
-  const handlePinLogout = useCallback(() => {
+  const savedSessions = Object.keys(pinSessions || {}).map((id) => Number(id));
+
+  const handleSavedSessionSelect = useCallback(
+    (chatId) => {
+      if (!pinSessions[chatId]) return;
+      setCurrentChatId(chatId);
+      setView("papers");
+      pushToast({
+        tone: "info",
+        title: "Sesion",
+        message: `Sesión reanudada en chat ${chatId}.`,
+      });
+    },
+    [pinSessions, pushToast],
+  );
+
+  const handleLogoutChat = useCallback(() => {
     if (currentChatId == null) return;
     setPinSessions((prev) => {
       const next = { ...prev };
       delete next[currentChatId];
       persistPinSessions(next);
+      pinSessionsRef.current = next;
       return next;
     });
-    setPinModal({
-      visible: true,
-      chatId: currentChatId,
-      pin: "",
-      error: "",
-      loading: false,
+    setCurrentChatId(null);
+    setLoginChatIdInput("");
+    setLoginPinInput("");
+    pushToast({
+      tone: "info",
+      title: "Sesion",
+      message: "Cerraste la sesión actual.",
     });
-  }, [currentChatId]);
+  }, [currentChatId, pushToast]);
 
   const handleHistoryRefresh = useCallback(() => {
     if (currentChatId == null) return;
     if (!isAuthorized) {
-      setPinModal({
-        visible: true,
-        chatId: currentChatId,
-        pin: "",
-        error: "",
-        loading: false,
+      pushToast({
+        tone: "error",
+        title: "Sesion",
+        message: "Inicia sesion para refrescar el historial.",
       });
       return;
     }
@@ -1966,12 +2008,10 @@ function DashboardApp({ initial }) {
   const handleLiveRefresh = useCallback(() => {
     if (currentChatId == null) return;
     if (!isAuthorized) {
-      setPinModal({
-        visible: true,
-        chatId: currentChatId,
-        pin: "",
-        error: "",
-        loading: false,
+      pushToast({
+        tone: "error",
+        title: "Sesion",
+        message: "Inicia sesion para usar actualizaciones en vivo.",
       });
       return;
     }
@@ -2514,10 +2554,19 @@ function DashboardApp({ initial }) {
         profiles=${availableProfiles}
         profilesLoading=${configState.loading || profilePending}
         view=${view}
-        onChatChange=${handleChatChange}
         onProfileChange=${handleProfileSelect}
         onViewChange=${setView}
-        onLogoutChat=${handlePinLogout}
+        isAuthorized=${isAuthorized}
+        loginChatId=${loginChatIdInput}
+        onLoginChatChange=${handleLoginChatChange}
+        loginPin=${loginPinInput}
+        onLoginPinChange=${handleLoginPinChange}
+        onLoginSubmit=${handleLoginSubmit}
+        loginError=${loginError}
+        loginLoading=${loginLoading}
+        savedSessions=${savedSessions}
+        onSavedSessionSelect=${handleSavedSessionSelect}
+        onLogoutChat=${handleLogoutChat}
       />
       <main className="content">
         <${PapersView}
@@ -2585,15 +2634,10 @@ function DashboardApp({ initial }) {
           magicLinkLoading=${magicLinkPending}
           onMagicLinkRequest=${handleMagicLinkRequest}
           chatId=${effectiveChatId}
+          magicLinkHistory=${magicLinkHistory}
         />
       </main>
       <${ToastHost} toasts=${toasts} onDismiss=${dismissToast} />
-      <${PinModal}
-        state=${pinModal}
-        onPinChange=${handlePinChange}
-        onSubmit=${handlePinSubmit}
-        onClose=${handlePinModalClose}
-      />
     </div>
   `;
 }
