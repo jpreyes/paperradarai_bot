@@ -666,11 +666,15 @@ async def profile_upload_pdf(
 @app.get("/users/{chat_id}/journals")
 def user_journals(
     chat_id: int,
-    limit: int = Query(9, ge=1, le=30),
-    llm_top: int | None = Query(None, ge=1, le=30),
+    limit: int = Query(0, ge=0, le=1000),
+    llm_top: int | None = Query(None, ge=1, le=1000),
 ):
     user_state = _ensure_user(chat_id)
-    payload = recommend_journals_for_user(user_state, limit=limit, llm_limit=llm_top)
+    payload = recommend_journals_for_user(
+        user_state,
+        limit=limit if limit > 0 else None,
+        llm_limit=llm_top,
+    )
     payload["chat_id"] = chat_id
     return payload
 
