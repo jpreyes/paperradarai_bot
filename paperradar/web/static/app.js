@@ -721,13 +721,10 @@ function JournalsView({
   chatId,
   view,
   state,
-  limit,
-  limitInput,
   sortKey,
   sortDir,
   onSortKeyChange,
   onSortDirChange,
-  onLimitInputChange,
   onRefresh,
   ingesting,
 }) {
@@ -749,7 +746,7 @@ function JournalsView({
 
   const skeletonCards = useMemo(
     () =>
-      Array.from({ length: Math.min(6, limit || 6) }).map(
+      Array.from({ length: 6 }).map(
         (_, idx) => html`<article key=${`journal-skeleton-${idx}`} className="journal-card journal-card--skeleton">
           <div className="journal-card__header">
             <div className="journal-card__headings">
@@ -773,7 +770,7 @@ function JournalsView({
           </div>
         </article>`,
       ),
-    [limit],
+    [],
   );
 
   const cards = sortedItems.map((entry, idx) =>
@@ -801,17 +798,6 @@ function JournalsView({
             <option value="desc">Descendente</option>
             <option value="asc">Ascendente</option>
           </select>
-        </div>
-        <div className="toolbar-group">
-          <label htmlFor="journalLimit">Resultados</label>
-          <input
-            id="journalLimit"
-            type="number"
-            min="1"
-            max="30"
-            value=${limitInput}
-            onChange=${onLimitInputChange}
-          />
         </div>
         <div className="toolbar-meta">
           <span>Catalogo: ${state.catalogSize ?? 0}</span>
@@ -1456,8 +1442,6 @@ function DashboardApp({ initial }) {
     error: null,
   });
   const [journalsState, setJournalsState] = useState({ ...DEFAULT_JOURNAL_STATE });
-  const [journalLimit, setJournalLimit] = useState(9);
-  const [journalLimitInput, setJournalLimitInput] = useState(9);
   const [journalNonce, setJournalNonce] = useState(0);
   const [journalIngesting, setJournalIngesting] = useState(false);
   const [journalSortKey, setJournalSortKey] = useState("fit_score");
@@ -1649,7 +1633,7 @@ function DashboardApp({ initial }) {
     }
     const controller = new AbortController();
     setJournalsState((prev) => ({ ...prev, loading: true, error: null }));
-    fetchJSON(`/users/${currentChatId}/journals?limit=${journalLimit}`, {
+    fetchJSON(`/users/${currentChatId}/journals?limit=0`, {
       signal: controller.signal,
     })
       .then((payload) => {
@@ -1675,7 +1659,7 @@ function DashboardApp({ initial }) {
         });
       });
     return () => controller.abort();
-  }, [currentChatId, isAuthorized, journalLimit, journalNonce, pushToast]);
+  }, [currentChatId, isAuthorized, journalNonce, pushToast]);
 
   useEffect(() => {
     if (!isAuthorized) return;
@@ -1809,16 +1793,6 @@ function DashboardApp({ initial }) {
     [requestPapers],
   );
 
-  const handleJournalLimitChange = useCallback((event) => {
-    const value = Number(event.target.value);
-    if (Number.isNaN(value)) {
-      setJournalLimitInput(9);
-      return;
-    }
-    const clamped = Math.min(30, Math.max(1, Math.round(value)));
-    setJournalLimitInput(clamped);
-  }, []);
-
   const handleJournalSortKeyChange = useCallback((event) => {
     setJournalSortKey(event.target.value);
   }, []);
@@ -1837,11 +1811,10 @@ function DashboardApp({ initial }) {
       });
       return;
     }
-    const nextLimit = journalLimitInput;
+    const nextLimit = 25;
     setJournalIngesting(true);
     try {
       await postJSON(`/users/${currentChatId}/journals/ingest`, { limit: nextLimit });
-      setJournalLimit(nextLimit);
       setJournalNonce((value) => value + 1);
       pushToast({
         tone: "success",
@@ -1857,7 +1830,7 @@ function DashboardApp({ initial }) {
     } finally {
       setJournalIngesting(false);
     }
-  }, [currentChatId, isAuthorized, journalLimitInput, pushToast]);
+  }, [currentChatId, isAuthorized, pushToast]);
 
   const handleMagicLinkRequest = useCallback(async () => {
     const email = magicEmail.trim();
@@ -2589,13 +2562,10 @@ function DashboardApp({ initial }) {
           chatId=${effectiveChatId}
           view=${view}
           state=${journalsState}
-          limit=${journalLimit}
-          limitInput=${journalLimitInput}
           sortKey=${journalSortKey}
           sortDir=${journalSortDir}
           onSortKeyChange=${handleJournalSortKeyChange}
           onSortDirChange=${handleJournalSortDirChange}
-          onLimitInputChange=${handleJournalLimitChange}
           onRefresh=${handleJournalRefresh}
           ingesting=${journalIngesting}
         />

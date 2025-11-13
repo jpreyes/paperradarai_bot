@@ -220,9 +220,6 @@ def recommend_journals_for_user(
             "llm_enabled": bool(user_state.get("llm_enabled")),
         }
 
-    limit = limit or DEFAULT_JOURNAL_TOPN
-    llm_limit = llm_limit or DEFAULT_JOURNAL_LLM_TOP
-
     store = journal_store.load_embedding_store()
     store_items = store.setdefault("items", {})
     embedding_model = store.get("model") or OPENAI_EMBEDDING_MODEL
@@ -282,7 +279,12 @@ def recommend_journals_for_user(
         )
 
     scored.sort(key=lambda item: item["score"], reverse=True)
-    top_items = scored[:limit]
+    total_items = len(scored)
+    effective_limit = total_items if (limit is None or limit <= 0) else min(limit, total_items)
+    llm_limit = llm_limit or DEFAULT_JOURNAL_LLM_TOP
+    if effective_limit:
+        llm_limit = min(llm_limit, effective_limit)
+    top_items = scored[:effective_limit] if effective_limit else scored
     llm_enabled = bool(user_state.get("llm_enabled"))
     chat_id = user_state.get("chat_id")
     results = []
